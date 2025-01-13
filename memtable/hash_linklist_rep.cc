@@ -292,6 +292,8 @@ class HashLinkListRep : public MemTableRep {
     }
 
     // Advance to the first entry with a key >= target
+    // 查找memtable
+    // 假如memtable_key为空，构造interal_key
     void Seek(const Slice& internal_key, const char* memtable_key) override {
       const char* encoded_key = (memtable_key != nullptr)
                                     ? memtable_key

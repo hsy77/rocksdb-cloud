@@ -1569,6 +1569,10 @@ Status DBImpl::CompactFilesImpl(
       new std::list<uint64_t>::iterator(
           CaptureCurrentFileNumberInPendingOutputs()));
 
+  // 核心的数据结构就是CompactionJob,每一次的compact都是一个job,
+  // 最终对于文件的compact都是在 CompactionJob::run中实现.  
+  // Compact是会多线程并发的执行，而这里怎样并发，并发多少线程都是在CompactionJob中实现的，
+  // 简单来说，当你的compact的文件range不重合的话，那么都是可以并发执行的。
   assert(is_snapshot_supported_ || snapshots_.empty());
   CompactionJobStats compaction_job_stats;
   CompactionJob compaction_job(
@@ -1591,6 +1595,8 @@ Status DBImpl::CompactFilesImpl(
   // takes running compactions into account (by skipping files that are already
   // being compacted). Since we just changed compaction score, we recalculate it
   // here.
+  // 创建一个压缩任务会影响压缩得分，因为该得分考虑了正在进行的压缩任务（通过跳过已经在被压缩的文件）。
+  // 由于我们刚刚更改了压缩得分，因此我们在这里重新计算它。
   version->storage_info()->ComputeCompactionScore(*cfd->ioptions(),
                                                   *c->mutable_cf_options());
 
@@ -1978,6 +1984,9 @@ Status DBImpl::FlushAllColumnFamilies(const FlushOptions& flush_options,
   return status;
 }
 
+// LSM 树 flush函数
+// 当 CF 的 memtable 要 flush 时，通过 DBImpl::Flush() 调用自身的 FlushMemTable() 函数，
+// 在flush memtable 的过程中进行新的 WAL 的创建。 
 Status DBImpl::Flush(const FlushOptions& flush_options,
                      ColumnFamilyHandle* column_family) {
   auto cfh = static_cast_with_check<ColumnFamilyHandleImpl>(column_family);
@@ -1988,6 +1997,7 @@ Status DBImpl::Flush(const FlushOptions& flush_options,
     s = AtomicFlushMemTables(flush_options, FlushReason::kManualFlush,
                              {cfh->cfd()});
   } else {
+    // 主要就是flush memtable
     s = FlushMemTable(cfh->cfd(), flush_options, FlushReason::kManualFlush);
   }
 
@@ -2352,6 +2362,7 @@ Status DBImpl::FlushMemTable(ColumnFamilyData* cfd,
                            "Force flushing stats CF with manual flush of %s "
                            "to avoid holding old logs",
                            cfd->GetName().c_str());
+            // 切换memtable
             s = SwitchMemtable(cfd_stats, &context);
             FlushRequest req{flush_reason, {{cfd_stats, flush_memtable_id}}};
             flush_reqs.emplace_back(std::move(req));
@@ -2921,6 +2932,8 @@ void DBImpl::MaybeScheduleFlushOrCompaction() {
     return;
   }
 
+  // RocksDB中后台运行的compact会有一个限制(max_compactions)
+  // 还有一个变量 unscheduled_compactions_，这个变量表示需要被compact的columnfamily的队列长度.
   while (bg_compaction_scheduled_ + bg_bottom_compaction_scheduled_ <
              bg_job_limits.max_compactions &&
          unscheduled_compactions_ > 0) {
@@ -2928,8 +2941,9 @@ void DBImpl::MaybeScheduleFlushOrCompaction() {
     ca->db = this;
     ca->compaction_pri_ = Env::Priority::LOW;
     ca->prepicked_compaction = nullptr;
-    bg_compaction_scheduled_++;
-    unscheduled_compactions_--;
+    bg_compaction_scheduled_++; //正在被调度的compaction线程数目
+    unscheduled_compactions_--; //待调度的线程个数，及待调度的cfd的长度
+    //调度BGWorkCompaction线程
     env_->Schedule(&DBImpl::BGWorkCompaction, ca, Env::Priority::LOW, this,
                    &DBImpl::UnscheduleCompactionCallback);
   }
@@ -3058,6 +3072,11 @@ void DBImpl::SchedulePendingFlush(const FlushRequest& flush_req) {
   }
 }
 
+// compact的时候RocksDB也有一个队列叫做DBImpl::compaction_queue_.
+// 这个队列的更新是在函数SchedulePendingCompaction更新的，
+// 且unscheduled_compactions_变量是和该函数一起更新的，
+// 也就是只有设置了该变量才能够正常调度compaction后台线程。
+// NeedsCompaction,通过这个函数来判断是否有sst需要被compact
 void DBImpl::SchedulePendingCompaction(ColumnFamilyData* cfd) {
   mutex_.AssertHeld();
   if (reject_new_background_jobs_) {
@@ -3670,12 +3689,20 @@ Status DBImpl::BackgroundCompaction(bool* made_progress,
     // Compaction makes a copy of the latest MutableCFOptions. It should be used
     // throughout the compaction procedure to make sure consistency. It will
     // eventually be installed into SuperVersion
+
+    // 拾取最新的可变 CF 选项，并在整个压缩作业中使用它
+    // 压缩会复制最新的 MutableCFOptions。它应该在整个压缩过程中使用，
+    // 以确保一致性。它最终将被安装到 SuperVersion 中
     auto* mutable_cf_options = cfd->GetLatestMutableCFOptions();
+
+    // 没有禁止自动compaction的时候，接下来通过PickCompaction选取当前CF中所需要compact的内容.
     if (!mutable_cf_options->disable_auto_compactions && !cfd->IsDropped()) {
       // NOTE: try to avoid unnecessary copy of MutableCFOptions if
       // compaction is not necessary. Need to make sure mutex is held
       // until we make a copy in the following code
       TEST_SYNC_POINT("DBImpl::BackgroundCompaction():BeforePickCompaction");
+
+      // 这个函数会根据设置的不同的Compact策略调用不同的方法
       c.reset(cfd->PickCompaction(*mutable_cf_options, mutable_db_options_,
                                   log_buffer));
       TEST_SYNC_POINT("DBImpl::BackgroundCompaction():AfterPickCompaction");

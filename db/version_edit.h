@@ -128,6 +128,12 @@ uint64_t PackFileNumberAndPathId(uint64_t number, uint64_t path_id);
 // file number and size, which can be used to create a new table reader for it.
 // The behavior is undefined when a copied of the structure is used when the
 // file is not in any live version any more.
+// 一个可复制的结构包含从 SST 文件读取数据所需的信息。
+// 它可以包含一个指向为文件打开的表读取器的指针，或者文件编号和大小，可用于为其创建新的表读取器。
+// 当文件不再存在于任何活动版本中时，使用该结构的副本的行为是未定义的。
+
+// 该结构记录了 sstable 的信息，比如大小、seq 范围等等。
+// 但最重要的就是 TableReader，它才是 sstable 的核心数据结构，所有的读取均在其中进行。
 struct FileDescriptor {
   // Table reader in table_reader_handle
   TableReader* table_reader;
@@ -182,6 +188,8 @@ struct FileSampledStats {
   mutable std::atomic<uint64_t> num_reads_sampled;
 };
 
+// 一个 sstable 对应一个 FileMetaData
+// smallest 和 largest 就是 sstable 的两个边界 key
 struct FileMetaData {
   FileDescriptor fd;
   InternalKey smallest;  // Smallest internal key served by table

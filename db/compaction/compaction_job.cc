@@ -242,6 +242,7 @@ void CompactionJob::ReportStartedCompaction(Compaction* compaction) {
   compaction_job_stats_->is_full_compaction = compaction->is_full_compaction();
 }
 
+// 首先是取得对应的compact的边界，这里每一个需要并发的compact都被抽象为一个sub compaction.
 void CompactionJob::Prepare() {
   AutoThreadOperationStageUpdater stage_updater(
       ThreadStatus::STAGE_COMPACTION_PREPARE);
@@ -256,6 +257,8 @@ void CompactionJob::Prepare() {
   write_hint_ = cfd->CalculateSSTWriteHint(c->output_level());
   bottommost_level_ = c->bottommost_level();
 
+  // 解析到对应的sub compaction以及边界.
+  // 解析完毕之后，则将会把对应的信息全部加入sub_compact_states中。
   if (c->ShouldFormSubcompactions()) {
     StopWatch sw(db_options_.clock, stats_, SUBCOMPACTION_SETUP_TIME);
     GenSubcompactionBoundaries();
@@ -478,6 +481,23 @@ void CompactionJob::GenSubcompactionBoundaries() {
   // overlap with N-1 other ranges. Since we requested a relatively large number
   // (128) of ranges from each input files, even N range overlapping would
   // cause relatively small inaccuracy.
+
+  // 目标是找到一些边界键，以便我们可以将压缩输入数据均匀地划分为max_subcompactions个范围。
+  // 对于每个输入文件，我们要求TableReader估计128个锚点，这些锚点将输入文件均匀地划分为128个
+  // 范围和范围大小。这可以通过扫描文件的索引块来计算。一旦我们拥有了所有输入文件的锚点，
+  // 我们就将它们合并在一起，并尝试找到均匀划分范围的键。
+  // 例如，如果我们有两个输入文件，每个文件返回以下范围：
+  //   File1: (a1, 1000), (b1, 1200), (c1, 1100)
+  //   File2: (a2, 1100), (b2, 1000), (c2, 1000)
+  // 我们按以下方式对键进行总排序：
+  //  (a1, 1000), (a2, 1100), (b1, 1200), (b2, 1000), (c1, 1100), (c2, 1000)
+  // 我们通过将所有范围的大小相加来计算总大小，即6400。如果我们想划分为2个子压缩，
+  // 范围大小的目标是3200。根据这个大小，我们将“b1”作为分区键，因为前三个范围将达到3200。
+  //
+  // 请注意，范围实际上是重叠的。例如，在上面的例子中，以“b1”结尾的范围与以“b2”结尾的范围重叠。
+  // 因此，大小1000+1100+1200是“b1”之前的所有范围的大小的一个低估。在极端情况下，
+  // 当我们只压缩N个L0文件时，一个范围可以与N-1个其他范围重叠。由于我们要求每个输入文件
+  // 都请求了相对较大数量的范围（128），即使N个范围重叠，也会导致相对较小的不准确。
   ReadOptions read_options(Env::IOActivity::kCompaction);
   read_options.rate_limiter_priority = GetRateLimiterPriority();
   auto* c = compact_->compaction;
@@ -499,6 +519,8 @@ void CompactionJob::GenSubcompactionBoundaries() {
   int start_lvl = c->start_level();
   int out_lvl = c->output_level();
 
+  // 首先是遍历所有的需要compact的level,
+  // 然后取得每一个level的边界(也就是最大最小key)加入到bounds数组之中。
   for (size_t lvl_idx = 0; lvl_idx < c->num_input_levels(); lvl_idx++) {
     int lvl = c->level(lvl_idx);
     if (lvl >= start_lvl && lvl <= out_lvl) {
@@ -534,6 +556,7 @@ void CompactionJob::GenSubcompactionBoundaries() {
   // Not the most efficient implementation. A much more efficient algorithm
   // probably exists. But they are more complex. If performance turns out to
   // be a problem, we can optimize.
+  // 然后就对获取到的bounds进行排序去重
   std::sort(
       all_anchors.begin(), all_anchors.end(),
       [cfd_comparator](TableReader::Anchor& a, TableReader::Anchor& b) -> bool {
@@ -553,6 +576,7 @@ void CompactionJob::GenSubcompactionBoundaries() {
 
   // Get the number of planned subcompactions, may update reserve threads
   // and update extra_num_subcompaction_threads_reserved_ for round-robin
+  // 计算理想情况下所需要的subcompactions的个数以及输出文件的个数.
   uint64_t num_planned_subcompactions;
   if (c->immutable_options()->compaction_pri == kRoundRobin &&
       c->immutable_options()->compaction_style == kCompactionStyleLevel) {
@@ -624,6 +648,7 @@ void CompactionJob::GenSubcompactionBoundaries() {
                extra_num_subcompaction_threads_reserved_));
 }
 
+// 遍历所有的sub_compact,然后启动线程来进行对应的compact工作，最后等到所有的线程完成，然后退出.
 Status CompactionJob::Run() {
   AutoThreadOperationStageUpdater stage_updater(
       ThreadStatus::STAGE_COMPACTION_RUN);
@@ -645,6 +670,8 @@ Status CompactionJob::Run() {
 
   // Always schedule the first subcompaction (whether or not there are also
   // others) in the current thread to be efficient with resources
+  // 通过 ProcessKeyValueCompaction 拿到的sub_compact_states进行真正的compaction
+  // 处理实际key-value的数据。
   ProcessKeyValueCompaction(compact_->sub_compact_states.data());
 
   // Wait for all other threads (if there are any) to finish execution
@@ -1161,6 +1188,8 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
 
   // Although the v2 aggregator is what the level iterator(s) know about,
   // the AddTombstones calls will be propagated down to the v1 aggregator.
+  // 尽管级别迭代器知道的是v2聚合器，但AddTombstones调用将向下传播到v1聚合器。
+  // 通过之前步骤中填充的sub_compact数据取出对应的key-value数据，构造一个InternalIterator。
   std::unique_ptr<InternalIterator> raw_input(versions_->MakeInputIterator(
       read_options, sub_compact->compaction, range_del_agg.get(),
       file_options_for_read_, start, end));
@@ -1294,6 +1323,7 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
       job_context_ ? job_context_->GetJobSnapshotSequence()
                    : kMaxSequenceNumber;
 
+  // 使用构造好的internalIterator再构造一个包含所有状态的CompactionIterator，直接初始化就可以，
   auto c_iter = std::make_unique<CompactionIterator>(
       input, cfd->user_comparator(), &merge, versions_->LastSequence(),
       &existing_snapshots_, earliest_write_conflict_snapshot_, job_snapshot_seq,
@@ -1306,6 +1336,8 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
       sub_compact->compaction, compaction_filter, shutting_down_,
       db_options_.info_log, full_history_ts_low, preserve_time_min_seqno_,
       preclude_last_level_min_seqno_);
+
+  // 构造完成需要将 CompactionIterator 的内部指针放在整个迭代器最开始的部位，
   c_iter->SeekToFirst();
 
   // Assign range delete aggregator to the target output level, which makes sure
@@ -1316,11 +1348,14 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
 
   // define the open and close functions for the compaction files, which will be
   // used open/close output files when needed.
+  // 将builder与output文件的writer进行绑定，创建好table builder
   const CompactionFileOpenFunc open_file_func =
       [this, sub_compact](CompactionOutputs& outputs) {
         return this->OpenCompactionOutputFile(sub_compact, outputs);
       };
 
+  // 这个函数调用是当之前累计的builder中block数据的大小达到可以写入的sst文件本身的大小 
+  // max_output_file_size ，会触发当前函数
   const CompactionFileCloseFunc close_file_func =
       [this, sub_compact, start_user_key, end_user_key](
           CompactionOutputs& outputs, const Status& status,
@@ -1336,6 +1371,9 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
       "CompactionJob::ProcessKeyValueCompaction()::Processing",
       static_cast<void*>(const_cast<Compaction*>(sub_compact->compaction)));
   uint64_t last_cpu_micros = prev_cpu_micros;
+
+  // while循环内部的逻辑除了Next()指针内部后台元素的处理之外，
+  // 就是我们下面要讲的写入key-value到output的逻辑了
   while (status.ok() && !cfd->IsDropped() && c_iter->Valid()) {
     // Invariant: c_iter.status() is guaranteed to be OK if c_iter->Valid()
     // returns true.
@@ -1360,6 +1398,10 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
     // and `close_file_func`.
     // TODO: it would be better to have the compaction file open/close moved
     // into `CompactionOutputs` which has the output file information.
+
+    // 将当前的 compaction_iterator 键添加到目标压缩输出中，如果需要关闭或打开输出文件，
+    // 它将调用 open_file_func 和 close_file_func。
+    // TODO: 最好将压缩文件的打开/关闭操作移动到 CompactionOutputs 中，因为它包含输出文件的信息。
     status = sub_compact->AddToOutput(*c_iter, open_file_func, close_file_func);
     if (!status.ok()) {
       break;
@@ -1446,6 +1488,9 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
   // close the output files. Open file function is also passed, in case there's
   // only range-dels, no file was opened, to save the range-dels, it need to
   // create a new output file.
+  // 即使状态不正常，也需要调用FinishCompactionOutputFile()来关闭输出文件。
+  // 同时传递打开文件的函数，以防只有范围删除操作而没有打开文件，
+  // 为了保存范围删除操作，需要创建一个新的输出文件。
   status = sub_compact->CloseCompactionFiles(status, open_file_func,
                                              close_file_func);
 
@@ -1541,6 +1586,7 @@ void CompactionJob::RecordDroppedKeys(
   }
 }
 
+// 最终调用s = sub_compact->builder->Finish();完成所有数据的固化写入
 Status CompactionJob::FinishCompactionOutputFile(
     const Status& input_status, SubcompactionState* sub_compact,
     CompactionOutputs& outputs, const Slice& next_table_min_key,

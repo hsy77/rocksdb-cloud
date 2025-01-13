@@ -37,6 +37,12 @@ class MultiGetContext;
 // multiple threads without external synchronization. Table readers are used
 // for reading various types of table formats supported by rocksdb including
 // BlockBasedTable, PlainTable and CuckooTable format.
+// 表（也称为 SST）是一个从字符串到字符串的排序映射。
+// 表是不可变的和持久的。 可以安全地从多个线程访问表，而无需外部同步。
+// 表读取器用于读取 rocksdb 支持的各种类型的表格式，包括 BlockBasedTable、PlainTable 和 CuckooTable 格式。
+
+// TableReader 实际上是一个抽象类，RocksDB 有多个不同的 sstable 实现，
+// 每一个 TableReader 的派生类都是一种实现，包括 BlockBasedTable、CuckooTable、MockTable、PlainTable 这四种。
 class TableReader {
  public:
   virtual ~TableReader() {}

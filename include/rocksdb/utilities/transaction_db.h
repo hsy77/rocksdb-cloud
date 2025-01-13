@@ -3,6 +3,10 @@
 //  COPYING file in the root directory) and Apache 2.0 License
 //  (found in the LICENSE.Apache file in the root directory).
 
+// transactionDB
+// 可以理解为 Transaction 的容器，一个 TransactionDB 内部可以有多个 Transaction，
+// 其中就有创建和获取 Transaction。
+
 #pragma once
 
 #include <string>
@@ -370,6 +374,7 @@ struct DeadlockPath {
   bool empty() { return path.empty() && !limit_exceeded; }
 };
 
+// 事务的容器
 class TransactionDB : public StackableDB {
  public:
   // Optimized version of ::Write that receives more optimization request such

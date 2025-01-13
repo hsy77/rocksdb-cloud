@@ -324,6 +324,9 @@ class CloudFileSystemOptions {
   // This requires opening DB to be really fast, and it's unnecessary to cleanup
   // various things, which is what RocksDB calls GetChildren for.
   //
+  // 这个选项用于远程压缩，我们在一个临时文件夹中打开数据库，然后在 RPC 完成后删除该文件夹。
+  // 这要求打开数据库的速度非常快，并且不需要清理各种东西，这就是 RocksDB 调用 GetChildren 的原因。
+  //
   // Default: false.
   bool skip_cloud_files_in_getchildren;
 

@@ -104,6 +104,7 @@ int MemTableList::NumFlushed() const {
 // Search all the memtables starting from the most recent one.
 // Return the most recent value found, if any.
 // Operands stores the list of merge operations to apply, so far.
+// immutable memtable的查询
 bool MemTableListVersion::Get(const LookupKey& key, std::string* value,
                               PinnableWideColumns* columns,
                               std::string* timestamp, Status* s,
@@ -153,6 +154,12 @@ bool MemTableListVersion::GetFromHistory(
                      nullptr /*read_callback*/, is_blob_index);
 }
 
+// immutable memtable的查询
+// 第一个参数为 memlist_，也就是 immutable memtable 组成的链表
+
+// 该函数就是遍历链表，从每一个 immutable memtable 中调用 MemTable::Get()，
+// 一旦读取成功就返回。MemTable::Get() 就是上一篇博客分析的从 memtable 中读取，
+// 因此从 immutable memtable 中读和从 memtable 中读完全一致。
 bool MemTableListVersion::GetFromList(
     std::list<MemTable*>* list, const LookupKey& key, std::string* value,
     PinnableWideColumns* columns, std::string* timestamp, Status* s,

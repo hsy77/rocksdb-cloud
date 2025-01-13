@@ -1083,6 +1083,10 @@ static bool SaveValue(void* arg, const char* entry) {
 
         return false;
       }
+
+      // 当 type 为 kTypeValue，才说明这条记录是被 Put 的，应该读值，
+      // 这一块主要是把找到的 user_key 的 value 赋值给 saver 中的 value，来作为最终的 Get 结果，
+      // 然后将 found_final_value 设为 true，代表成功读取到 value。
       case kTypeValue:
       case kTypeValuePreferredSeqno: {
         if (s->inplace_update_support) {
@@ -1195,6 +1199,10 @@ static bool SaveValue(void* arg, const char* entry) {
 
         return false;
       }
+
+    // kTypeDeletion、kTypeDeletionWithTimestamp、kTypeSingleDeletion 都没有加 break，
+    // 说明它们的操作都一样，交给 kTypeRangeDeletion 来做。简单的来看，当读到 delete 时，
+    // 会触发一些 merge 操作，促使这个 user_key 被清理掉，或者直接返回 NotFound。
       case kTypeDeletion:
       case kTypeDeletionWithTimestamp:
       case kTypeSingleDeletion:
@@ -1283,6 +1291,11 @@ static bool SaveValue(void* arg, const char* entry) {
   return false;
 }
 
+// 先查找memtable中是否有该key
+// 会首先通过 bloom_filter 进行存在性检查，如果得到了阴性，那么就不会在往下进行读操作了，
+// 如果得到了阳性，那么就调用 MemTable::GetFromTable() 来进一步读取。
+// 所以，Get() 的核心就是使用 bloom_filter 进行存在性检查，
+// 之后的读操作由 GetFromTable() 来完成。
 bool MemTable::Get(const LookupKey& key, std::string* value,
                    PinnableWideColumns* columns, std::string* timestamp,
                    Status* s, MergeContext* merge_context,
@@ -1359,6 +1372,8 @@ bool MemTable::Get(const LookupKey& key, std::string* value,
   return found_final_value;
 }
 
+// 其一是构造 Saver，其二是将其交给 MemTableRep::Get() 来进一步执行读取。
+// Saver，这个结构用来保存读取时的上下文，比如 LookupKey、MemTable、SequenceNumber 等等
 void MemTable::GetFromTable(const LookupKey& key,
                             SequenceNumber max_covering_tombstone_seq,
                             bool do_merge, ReadCallback* callback,
@@ -1371,12 +1386,12 @@ void MemTable::GetFromTable(const LookupKey& key,
   saver.status = s;
   saver.found_final_value = found_final_value;
   saver.merge_in_progress = merge_in_progress;
-  saver.key = &key;
-  saver.value = value;
+  saver.key = &key; // 传入的 LookupKey
+  saver.value = value; // 要保存值的地址
   saver.columns = columns;
   saver.timestamp = timestamp;
-  saver.seq = kMaxSequenceNumber;
-  saver.mem = this;
+  saver.seq = kMaxSequenceNumber; // 被设置为了 kMaxSequenceNumber，即最大的 seq
+  saver.mem = this;   // 当前的 MemTable 类
   saver.merge_context = merge_context;
   saver.max_covering_tombstone_seq = max_covering_tombstone_seq;
   saver.merge_operator = moptions_.merge_operator;
@@ -1389,6 +1404,8 @@ void MemTable::GetFromTable(const LookupKey& key,
   saver.do_merge = do_merge;
   saver.allow_data_in_errors = moptions_.allow_data_in_errors;
   saver.protection_bytes_per_key = moptions_.protection_bytes_per_key;
+  // 在 MemTable::GetFromTable() 调用 MemTable::Get() 时，
+  // 传递的参数为 (key, &saver, SaveValue)。
   table_->Get(key, &saver, SaveValue);
   *seq = saver.seq;
 }
@@ -1683,8 +1700,29 @@ size_t MemTable::CountSuccessiveMergeEntries(const LookupKey& key,
   return num_successive_merges;
 }
 
+// MemTableRep 这个类用来抽象不同的 MemTable 的实现，
+// 也就是说它是一个虚类，然后不同的MemTable 实现了它。
+
 void MemTableRep::Get(const LookupKey& k, void* callback_args,
                       bool (*callback_func)(void* arg, const char* entry)) {
+  // GetDynamicPrefixIterator() 生成一个迭代器，其类型为 auto
+  // 而 GetDynamicPrefixIterator() 被声明为了 virtual，
+  // 说明其函数体由 table_ 具体指向的对象类型决定，即由派生类决定。
+  // 每个派生均有自己的迭代器，而 RocksDB 默认使用 SkipList，
+  // 即 table_ 实际指向 SkipListRep 对象。
+
+  // Seek函数是找到memtable中比user_key大或者等于的key
+
+  // 但还有两个问题：
+  // 1.由于 memtable_key 是按照 user_key 是升序排列的，所以上述查找得到的 user_key 
+  // 可能大于我们目标的 user_key，因此需要判断查找结果的 user_key 是否合目标吻合。
+  // 2.需要根据 type 的类型来判断这条记录是不是用来读值，如果是 delete 那当然不行。
+  // callback_func() 就是解决这两个问题的
+
+  // callback_func() 是 SaveValue(&saver, iter->key());
+  // SaveValue判断找到的 user_key 是否为目标 user_key，使用的函数为 EqualWithoutTimestamp()，
+  // 即在不考虑 ts 部分的情况下去比较两个 user_key 是否相同。
+  // 接着，从找到的 user_key 中将其的 ts 提取出来，赋值给 saver 的 timestamp 字段。
   auto iter = GetDynamicPrefixIterator();
   for (iter->Seek(k.internal_key(), k.memtable_key().data());
        iter->Valid() && callback_func(callback_args, iter->key());

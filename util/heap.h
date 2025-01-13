@@ -112,12 +112,13 @@ class BinaryHeap {
   static inline size_t get_left(size_t index) { return 2 * index + 1; }
   static inline size_t get_right(size_t index) { return 2 * index + 2; }
 
+  // 构造最小堆的过程无非就是让插入的元素字典序中越小，越向上，如果没法上升则就放在原地，
   void upheap(size_t index) {
     T v = std::move(data_[index]);
     while (index > get_root()) {
       const size_t parent = get_parent(index);
-      if (!cmp_(data_[parent], v)) {
-        break;
+      if (!cmp_(data_[parent], v)) { //这个比较器由用户传入，默认是字典序,即data[parent] < v 返回true
+        break; // break的时候表示v已经无法下降，data_[parent]的字典序比v大，就退出循环吧
       }
       data_[index] = std::move(data_[parent]);
       index = parent;

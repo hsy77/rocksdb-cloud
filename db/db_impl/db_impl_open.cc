@@ -1935,6 +1935,10 @@ Status DB::OpenAndTrimHistory(
   return s;
 }
 
+// 创建WAL
+// 会通过 wal_dir 和 log_file_num 生成一个文件名，然后判断是否配置了 recycle_log_number。
+// 如果否，那么就会调用 NewWritableFile() 重新创建一个 WAL。
+// 如果是，那就调用 ReuseWritableFile() 复用原来的 WAL，但要将其名字改为新的 log_fname。
 IOStatus DBImpl::CreateWAL(const WriteOptions& write_options,
                            uint64_t log_file_num, uint64_t recycle_log_number,
                            size_t preallocate_block_size,
@@ -1947,8 +1951,11 @@ IOStatus DBImpl::CreateWAL(const WriteOptions& write_options,
   FileOptions opt_file_options =
       fs_->OptimizeForLogWrite(file_options_, db_options);
   std::string wal_dir = immutable_db_options_.GetWalDir();
+
+  // 会通过 wal_dir 和 log_file_num 生成一个文件名
   std::string log_fname = LogFileName(wal_dir, log_file_num);
 
+  // 然后判断是否配置了 recycle_log_number。
   if (recycle_log_number) {
     ROCKS_LOG_INFO(immutable_db_options_.info_log,
                    "reusing log %" PRIu64 " from recycle list\n",
@@ -2066,6 +2073,7 @@ Status DBImpl::Open(const DBOptions& db_options, const std::string& dbname,
     log::Writer* new_log = nullptr;
     const size_t preallocate_block_size =
         impl->GetWalPreallocateBlockSize(max_write_buffer_size);
+    // 新的 DB 被打开时会创建一个 WAL。
     s = impl->CreateWAL(write_options, new_log_number, 0 /*recycle_log_number*/,
                         preallocate_block_size, &new_log);
     if (s.ok()) {

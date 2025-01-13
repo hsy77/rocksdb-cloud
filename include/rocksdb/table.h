@@ -682,6 +682,7 @@ struct BlockBasedTablePropertyNames {
 };
 
 // Create default block based table factory.
+// default的块是SST格式的
 TableFactory* NewBlockBasedTableFactory(
     const BlockBasedTableOptions& table_options = BlockBasedTableOptions());
 

@@ -19,6 +19,13 @@
 
 namespace ROCKSDB_NAMESPACE {
 
+// 通过调用LevelCompactionPicker::NeedsCompaction函数来进行是否满足compaction的条件判断的，
+// 以下条件只要满足一个就可以进行compaction的调度：
+// - 有超时的sst(ExpiredTtlFiles)
+// - files_marked_for_compaction或者bottommost_files_marked_for_compaction都不为空
+//   两个vector类型的数组
+// - 遍历所有的level的sst,然后判断是否需要compact
+//   这里通过每个sst的score进行判断，后续会对该score进行描述
 bool LevelCompactionPicker::NeedsCompaction(
     const VersionStorageInfo* vstorage) const {
   if (!vstorage->ExpiredTtlFiles().empty()) {
@@ -199,13 +206,20 @@ void LevelCompactionBuilder::PickFileToCompact(
   start_level_inputs_.files.clear();
 }
 
+// 这个函数他会遍历所有的level,然后来选择对应需要compact的input和output.
+// 
 void LevelCompactionBuilder::SetupInitialFiles() {
   // Find the compactions by size on all levels.
   bool skipped_l0_to_base = false;
+
+  // 从之前计算好的的compact信息中得到对应的score.
   for (int i = 0; i < compaction_picker_->NumberLevels() - 1; i++) {
     start_level_score_ = vstorage_->CompactionScore(i);
     start_level_ = vstorage_->CompactionScoreLevel(i);
     assert(i == 0 || start_level_score_ <= vstorage_->CompactionScore(i - 1));
+    // 只有当score大于一才有必要进行compact的处理(所有操作都在上面的循环中).
+    // 如果是level0的话，那么output_level 则是vstorage_->base_level(),否则就是level+1. 
+    // 这里base_level()可以认为就是level1或者是最小的非空的level
     if (start_level_score_ >= 1) {
       if (skipped_l0_to_base && start_level_ == vstorage_->base_level()) {
         // If L0->base_level compaction is pending, don't schedule further
@@ -213,6 +227,8 @@ void LevelCompactionBuilder::SetupInitialFiles() {
         // may starve.
         continue;
       }
+
+      // 通过PickFileToCompact来选择input以及output文件.
       output_level_ =
           (start_level_ == 0) ? vstorage_->base_level() : start_level_ + 1;
       bool picked_file_to_compact = PickFileToCompact();
@@ -322,6 +338,8 @@ void LevelCompactionBuilder::SetupInitialFiles() {
   }
 }
 
+// 这里如果start_level_为０，也就是level-0的话，才会进行下面的处理，
+// 就是从level-0中得到所有的重合key的文件，然后加入到start_level_inputs中.
 bool LevelCompactionBuilder::SetupOtherL0FilesIfNeeded() {
   if (start_level_ == 0 && output_level_ != 0 && !is_l0_trivial_move_) {
     return compaction_picker_->GetOverlappingL0Files(
@@ -453,6 +471,8 @@ void LevelCompactionBuilder::SetupOtherFilesWithRoundRobinExpansion() {
   }
 }
 
+// 假设start_level_inputs被扩展了，那么对应的output也需要被扩展，
+// 因为非level0的其他的level的文件key都是不会overlap的.
 bool LevelCompactionBuilder::SetupOtherInputsIfNeeded() {
   // Setup input files from output level. For output to L0, we only compact
   // spans of files that do not interact with any pending compactions, so don't
@@ -501,6 +521,12 @@ bool LevelCompactionBuilder::SetupOtherInputsIfNeeded() {
   return true;
 }
 
+// TOTHINK
+// rocksdb默认的compaction函数，感觉可以通过重载写新的compaction函数
+// 调用了三个主要的函数：
+// SetupInitialFiles　这个函数主要用来初始化需要Compact的文件.
+// SetupOtherL0FilesIfNeeded 如果需要对L0层进行compact的话，那么还需要再设置其他的L0文件
+// SetupOtherInputsIfNeeded 选择对应的输出文件
 Compaction* LevelCompactionBuilder::PickCompaction() {
   // Pick up the first file to start compaction. It may have been extended
   // to a clean cut.
@@ -523,6 +549,7 @@ Compaction* LevelCompactionBuilder::PickCompaction() {
   }
 
   // Form a compaction object containing the files we picked.
+  // 最终就是构造一个compact返回
   Compaction* c = GetCompaction();
 
   TEST_SYNC_POINT_CALLBACK("LevelCompactionPicker::PickCompaction:Return", c);
@@ -779,11 +806,15 @@ bool LevelCompactionBuilder::TryExtendNonL0TrivialMove(int start_index,
   return false;
 }
 
+// 通过PickFileToCompact来选择input以及output文件.
 bool LevelCompactionBuilder::PickFileToCompact() {
   // level 0 files are overlapping. So we cannot pick more
   // than one concurrent compactions at this level. This
   // could be made better by looking at key-ranges that are
   // being compacted at level 0.
+
+  // 0 级文件是重叠的。因此，我们不能在这个级别上同时选择多个压缩操作。
+  // 这可以通过查看 0 级正在压缩的键范围来改进。
   if (start_level_ == 0 &&
       !compaction_picker_->level0_compactions_in_progress()->empty()) {
     if (PickSizeBasedIntraL0Compaction()) {
@@ -810,9 +841,11 @@ bool LevelCompactionBuilder::PickFileToCompact() {
 
   // Pick the file with the highest score in this level that is not already
   // being compacted.
+  // 选择这个级别中分数最高的文件，并且这个文件没有被压缩。
   const std::vector<int>& file_scores =
       vstorage_->FilesByCompactionPri(start_level_);
 
+  // 开始遍历当前的输入level的所有待compact的文件，然后选择一些合适的文件然后compact到下一个level.
   unsigned int cmp_idx;
   for (cmp_idx = vstorage_->NextCompactionIndex(start_level_);
        cmp_idx < file_scores.size(); cmp_idx++) {
@@ -833,6 +866,12 @@ bool LevelCompactionBuilder::PickFileToCompact() {
       continue;
     }
 
+    // 选择好文件之后，将会扩展当前文件的key的范围，得到一个”clean cut”的范围，
+    // 选择的文件和旁边的SST范围有重叠的话，会把旁边的SST加进来
+
+    // 选择好之后，会再做一次判断，这次是判断是否正在compact的out_level的文件范围是否和
+    // 我们选择好的文件的key有重合，如果有，则跳过这个文件. 这里之所以会有这个判断，
+    // 主要原因还是因为compact是会并行的执行的.
     start_level_inputs_.files.push_back(f);
     if (!compaction_picker_->ExpandInputsToCleanCut(cf_name_, vstorage_,
                                                     &start_level_inputs_) ||
@@ -856,6 +895,15 @@ bool LevelCompactionBuilder::PickFileToCompact() {
     // Note we rely on ExpandInputsToCleanCut() to tell us whether any output-
     // level files are locked, not just the extra ones pulled in for user-key
     // overlap.
+
+    // 现在输入级别已完全扩展，我们检查是否有任何输出文件由于待处理的压缩而被锁定。
+    // 请注意，我们依赖 ExpandInputsToCleanCut() 来告诉我们是否有任何输出级别的文件被锁定，
+    // 而不仅仅是为了用户键重叠而拉入的
+
+    // 选择输出level中需要一起被compact的文件(output_level_inputs). 
+    // 实现也是比较简单，就是从输出level的所有文件中找到是否有和上面选择好的input中有重合的文件，
+    // 如果有，那么则需要一起进行compact.
+
     InternalKey smallest, largest;
     compaction_picker_->GetRange(start_level_inputs_, &smallest, &largest);
     CompactionInputFiles output_level_inputs;

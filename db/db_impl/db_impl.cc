@@ -585,7 +585,8 @@ Status DBImpl::CloseHelper() {
       iter.first->UnrefAndTryDelete();
     }
   }
-
+  
+  // 首先是从compaction_queue_队列中读取第一个需要compact的column family.
   while (!compaction_queue_.empty()) {
     auto cfd = PopFirstFromCompactionQueue();
     cfd->UnrefAndTryDelete();
@@ -2774,6 +2775,7 @@ bool DBImpl::ShouldReferenceSuperVersion(const MergeContext& merge_context) {
              merge_context.GetOperands().size();
 }
 
+// 读的开始
 Status DBImpl::GetImpl(const ReadOptions& read_options, const Slice& key,
                        GetImplOptions& get_impl_options) {
   assert(get_impl_options.value != nullptr ||
@@ -2828,7 +2830,7 @@ Status DBImpl::GetImpl(const ReadOptions& read_options, const Slice& key,
       get_impl_options.merge_operands[i].Reset();
     }
   }
-
+  // TOREAD
   // RocksDB-Cloud contribution begin
   auto super_snapshot =
       dynamic_cast<const SuperSnapshotImpl*>(read_options.snapshot);
@@ -2916,6 +2918,9 @@ Status DBImpl::GetImpl(const ReadOptions& read_options, const Slice& key,
   // First look in the memtable, then in the immutable memtable (if any).
   // s is both in/out. When in, s could either be OK or MergeInProgress.
   // merge_operands will contain the sequence of merges in the latter case.
+  // 首先在内存表中查找，然后在不可变内存表中查找（如果有的话）。
+  // s 既是输入也是输出。输入时，s 可以是 OK 或 MergeInProgress。
+  // 在后者情况下，merge_operands 将包含合并操作的序列。
   LookupKey lkey(key, snapshot, read_options.timestamp);
   PERF_TIMER_STOP(get_snapshot_time);
 
@@ -2924,6 +2929,8 @@ Status DBImpl::GetImpl(const ReadOptions& read_options, const Slice& key,
   bool done = false;
   std::string* timestamp =
       ucmp->timestamp_size() > 0 ? get_impl_options.timestamp : nullptr;
+
+  // 从 memtable中取
   if (!skip_memtable) {
     // Get value associated with key
     if (get_impl_options.get_value) {
@@ -2943,7 +2950,7 @@ Status DBImpl::GetImpl(const ReadOptions& read_options, const Slice& key,
 
         RecordTick(stats_, MEMTABLE_HIT);
       } else if ((s.ok() || s.IsMergeInProgress()) &&
-                 sv->imm->Get(lkey,
+                 sv->imm->Get(lkey, //没读到，从immutable memtable中读
                               get_impl_options.value
                                   ? get_impl_options.value->GetSelf()
                                   : nullptr,
@@ -2987,6 +2994,9 @@ Status DBImpl::GetImpl(const ReadOptions& read_options, const Slice& key,
   TEST_SYNC_POINT("DBImpl::GetImpl:PostMemTableGet:0");
   TEST_SYNC_POINT("DBImpl::GetImpl:PostMemTableGet:1");
   PinnedIteratorsManager pinned_iters_mgr;
+
+  // 从sst文件中查询
+  // 会调用 Version::Get() 函数，而这个函数，才真正进入磁盘中开始查找。
   if (!done) {
     PERF_TIMER_GUARD(get_from_output_files_time);
     sv->current->Get(

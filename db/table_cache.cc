@@ -87,6 +87,7 @@ TableCache::TableCache(const ImmutableOptions& ioptions,
 
 TableCache::~TableCache() = default;
 
+// 通过相关的参数创建了一个 TableReader。
 Status TableCache::GetTableReader(
     const ReadOptions& ro, const FileOptions& file_options,
     const InternalKeyComparator& internal_comparator,
@@ -163,6 +164,7 @@ Status TableCache::GetTableReader(
   return s;
 }
 
+// 一般的 cache 逻辑，读取然后判断是否存在，不存在则创建一个插入 cache。
 Status TableCache::FindTable(
     const ReadOptions& ro, const FileOptions& file_options,
     const InternalKeyComparator& internal_comparator,
@@ -424,6 +426,10 @@ bool TableCache::GetFromRowCache(const Slice& user_key, IterKey& row_cache_key,
   return found;
 }
 
+// cache 相关的信息，分为两个 cache：
+// - row_cache，用来 cache <key, vlaue>
+// - table_cache，用来 cache <key，sstable>
+// 从 sstable 中查找目标 key。
 Status TableCache::Get(
     const ReadOptions& options,
     const InternalKeyComparator& internal_comparator,
@@ -440,21 +446,34 @@ Status TableCache::Get(
 
   // Check row cache if enabled.
   // Reuse row_cache_key sequence number when row cache hits.
+
+  // 判断 row_cache 是否打开，如果打开，则会在 row_cache 中进行一次查找，
+  // 并把查找结果记录在 get_context 中。
   Status s;
   if (ioptions_.row_cache && !get_context->NeedToReadSequence()) {
     auto user_key = ExtractUserKey(k);
+
+    // 在进入 row_cache 前，会先将 key 包装成 row_cache 中形式的 key。
+    // row_cache 的 key 就是 fd_number+seq_no+user_key。
     uint64_t cache_entry_seq_no =
         CreateRowCacheKeyPrefix(options, fd, k, get_context, row_cache_key);
+
+    // 如果在 row_cache 中找到，那么 done 就是 true，后面的查找就全部跳过。
+    // 如果没有找到，那么就会进入 sstable 中查找。
     done = GetFromRowCache(user_key, row_cache_key, row_cache_key.Size(),
                            get_context, &s, cache_entry_seq_no);
     if (!done) {
       row_cache_entry = &row_cache_entry_buffer;
     }
   }
+
+  // 进入sstable中查找
+  // 在 row_cahce 中读取失败后，会拿到 sstable 的 TableReader，如果为空，那么就会在 table_cache 中找。
   TableReader* t = fd.table_reader;
   TypedHandle* handle = nullptr;
   if (s.ok() && !done) {
     if (t == nullptr) {
+      // table_cache 中没有找到，那么就会在 sstable 中查找。
       s = FindTable(options, file_options_, internal_comparator, file_meta,
                     &handle, block_protection_bytes_per_key, prefix_extractor,
                     options.read_tier == kBlockCacheTier /* no_io */,
@@ -483,6 +502,7 @@ Status TableCache::Get(
         }
       }
     }
+    // 当获取到 TableReader 中后，RocksDB 就要在其中查找目标 key 了。
     if (s.ok()) {
       get_context->SetReplayLog(row_cache_entry);  // nullptr if no cache.
       s = t->Get(options, k, get_context, prefix_extractor.get(), skip_filters);
@@ -495,6 +515,7 @@ Status TableCache::Get(
   }
 
   // Put the replay log in row cache only if something was found.
+  // 当从 sstable 中找到后，将会把 <key, value> 缓存进 row_cache 中。
   if (!done && s.ok() && row_cache_entry && !row_cache_entry->empty()) {
     RowCacheInterface row_cache{ioptions_.row_cache.get()};
     size_t charge = row_cache_entry->capacity() + sizeof(std::string);

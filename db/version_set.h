@@ -734,8 +734,8 @@ class VersionStorageInfo {
   // are initialized by ComputeCompactionScore.
   // The most critical level to be compacted is listed first
   // These are used to pick the best compaction level
-  std::vector<double> compaction_score_;
-  std::vector<int> compaction_level_;
+  std::vector<double> compaction_score_;  // 当前sst的score
+  std::vector<int> compaction_level_;     // 当前sst需要被compact到的层level
   int l0_delay_trigger_count_ = 0;  // Count used to trigger slow down and stop
                                     // for number of L0 files.
 
@@ -1326,6 +1326,7 @@ class VersionSet {
   }
 
   // Allocate and return a new file number
+  // log_file_num 的生成就是自增
   uint64_t NewFileNumber() { return next_file_number_.fetch_add(1); }
 
   // Fetch And Add n new file number

@@ -33,7 +33,9 @@ class FlushBlockBySizePolicy : public FlushBlockPolicy {
             ((block_size * (100 - block_size_deviation)) + 99) / 100),
         align_(align),
         data_block_builder_(data_block_builder) {}
-
+  
+  // 判断暂存于内存中的 data block 大小是否达到阈值 block_size_，
+  // 即使是 BlockAlmostFull() 也是通过 block_size _ 来进行比较。
   bool Update(const Slice& key, const Slice& value) override {
     // it makes no sense to flush when the data block is empty
     if (data_block_builder_.empty()) {

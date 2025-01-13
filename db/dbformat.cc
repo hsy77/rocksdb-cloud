@@ -25,6 +25,12 @@ namespace ROCKSDB_NAMESPACE {
 // and the value type is embedded as the low 8 bits in the sequence
 // number in internal keys, we need to use the highest-numbered
 // ValueType, not the lowest).
+// kValueTypeForSeek 定义了在构建 ParsedInternalKey 对象以查找特定序列号时
+// 应该传递的 ValueType。 
+// 由于我们按降序对序列号进行排序，并且值类型被嵌入序列号的低 8 位中，因此我们
+// 需要使用编号最高的值类型，而不是最低的。
+
+
 const ValueType kValueTypeForSeek = kTypeValuePreferredSeqno;
 const ValueType kValueTypeForSeekForPrev = kTypeDeletion;
 const std::string kDisableUserTimestamp;
@@ -183,6 +189,7 @@ std::string InternalKey::DebugString(bool hex) const {
   return result;
 }
 
+// key的比较
 int InternalKeyComparator::Compare(const ParsedInternalKey& a,
                                    const ParsedInternalKey& b) const {
   // Order by:
@@ -229,6 +236,8 @@ int InternalKeyComparator::Compare(const ParsedInternalKey& a,
   return -Compare(b, a);
 }
 
+// internal_key 就是 kstart_ ，memtable_key 就是start_。
+// 同样，LookupKey 也会选择是否给 internal_key 加上 ts，
 LookupKey::LookupKey(const Slice& _user_key, SequenceNumber s,
                      const Slice* ts) {
   size_t usize = _user_key.size();

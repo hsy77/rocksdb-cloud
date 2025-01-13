@@ -133,6 +133,8 @@ bool PosixWrite(int fd, const char* buf, size_t nbyte) {
   return true;
 }
 
+// 到这一步，调用链就结束了，这是对 pwrite() 的最后一层封装。
+// 最终调用了 pwrite()，一次写入的大小就是上一步 rate_limiter 分配的 size。
 bool PosixPositionedWrite(int fd, const char* buf, size_t nbyte, off_t offset) {
   const size_t kLimit1Gb = 1UL << 30;
 

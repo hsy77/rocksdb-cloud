@@ -626,6 +626,7 @@ Status WriteBatchWithIndex::GetFromBatchAndDB(
   MergeContext merge_context;
   Status s;
 
+  // 从 writeBatch 中取
   auto result = WriteBatchWithIndexInternal::GetFromBatch(
       this, column_family, key, &merge_context, pinnable_val->GetSelf(), &s);
 
@@ -658,6 +659,8 @@ Status WriteBatchWithIndex::GetFromBatchAndDB(
   }
 
   get_impl_options.callback = callback;
+
+  // 从DB中取
   s = static_cast_with_check<DBImpl>(db->GetRootDB())
           ->GetImpl(read_options, key, get_impl_options);
 

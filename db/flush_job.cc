@@ -220,6 +220,8 @@ void FlushJob::PickMemTable() {
   base_->Ref();  // it is likely that we do not need this reference
 }
 
+// 大部分都是字段的更新、数据的统计、状态的记录等与核心关系不大的内容。
+// 该函数主要:调用 WriteLevel0Table() 构建 L0 的 SST；
 Status FlushJob::Run(LogsWithPrepTracker* prep_tracker, FileMetaData* file_meta,
                      bool* switched_to_mempurge, bool* skipped_since_bg_error,
                      ErrorHandler* error_handler) {
@@ -289,6 +291,8 @@ Status FlushJob::Run(LogsWithPrepTracker* prep_tracker, FileMetaData* file_meta,
     }
   }
   Status s;
+  // 调用 WriteLevel0Table() 来进行 SST 的构建。
+  // 注意，此时的调用单位仍然是 FlushJob，即一个 FlushJob 调用一次 WriteLevel0Table()。
   if (mempurge_s.ok()) {
     base_->Unref();
     s = Status::OK();
@@ -851,6 +855,11 @@ bool FlushJob::MemPurgeDecider(double threshold) {
           threshold);
 }
 
+// 该函数负责写入 L0 层的 SST。
+// 大部分是字段的更新和数据的统计
+// 核心内容：
+// 1，调用 BuildTable() 来构建 SST，该函数将一直负责到 SST 完全落盘才返回；
+// 2，调用 VersionEdit::AddFile() 将上一步构建的 SST 加入 L0；
 Status FlushJob::WriteLevel0Table() {
   AutoThreadOperationStageUpdater stage_updater(
       ThreadStatus::STAGE_FLUSH_WRITE_L0);
@@ -874,6 +883,9 @@ Status FlushJob::WriteLevel0Table() {
     // memtables and range_del_iters store internal iterators over each data
     // memtable and its associated range deletion memtable, respectively, at
     // corresponding indexes.
+    // memtables 和 range_del_iters 分别在相应的索引处存储每个数据 memtable 
+    // 及其关联的范围删除 memtable 的内部迭代器。
+    // memtables 迭代数组
     std::vector<InternalIterator*> memtables;
     std::vector<std::unique_ptr<FragmentedRangeTombstoneIterator>>
         range_del_iters;
@@ -892,6 +904,10 @@ Status FlushJob::WriteLevel0Table() {
     TEST_SYNC_POINT_CALLBACK("FlushJob::WriteLevel0Table:num_memtables",
                              &mems_size);
     assert(job_context_);
+
+    // mems_ 是 FlushJob 要下刷的所有 imm memtable（以下简称 mem），
+    // 其元素个数是 1 还是 1+ 这里不管，因为是 PickMemtable() 负责的事情。
+    // 这里遍历了所有的 mem，并把它们的迭代器全部生成，push 进一个迭代器向量 memtables 中。
     for (MemTable* m : mems_) {
       ROCKS_LOG_INFO(
           db_options_.info_log,
@@ -927,6 +943,8 @@ Status FlushJob::WriteLevel0Table() {
                          << GetFlushReasonString(flush_reason_);
 
     {
+      // 通过 NewMergingIterator() 将这些迭代器合并成一个大的迭代器 iter，
+      // 该迭代器将涵盖本次 Flush 要负责的所有 k-v。
       ScopedArenaPtr<InternalIterator> iter(
           NewMergingIterator(&cfd_->internal_comparator(), memtables.data(),
                              static_cast<int>(memtables.size()), &arena));
@@ -982,6 +1000,9 @@ Status FlushJob::WriteLevel0Table() {
       const SequenceNumber job_snapshot_seq =
           job_context_->GetJobSnapshotSequence();
 
+      // 调用 BuildTable() 来构建 SST。可以看到，传入的参数很多，
+      // 但最重要的是第 7 个参数 iter.get()，
+      // 即上述生成的大迭代器，SST 输入的所有 k-v 均来源于此。
       s = BuildTable(
           dbname_, versions_, db_options_, tboptions, file_options_,
           cfd_->table_cache(), iter.get(), std::move(range_del_iters), &meta_,

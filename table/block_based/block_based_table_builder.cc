@@ -259,6 +259,7 @@ class BlockBasedTableBuilder::BlockBasedTablePropertiesCollector
   bool prefix_filtering_;
 };
 
+// Rep 封装了最核心的内容，其中有两个字段叫作 data_block 和 flush_block_policy
 struct BlockBasedTableBuilder::Rep {
   const ImmutableOptions ioptions;
   // BEGIN from MutableCFOptions
@@ -351,6 +352,7 @@ struct BlockBasedTableBuilder::Rep {
   BlockHandle pending_handle;  // Handle to add to index block
 
   std::string compressed_output;
+  // FlushBlockPolicy 是一个抽象类，其默认的实现类为 FlushBlockBySizePolicy
   std::unique_ptr<FlushBlockPolicy> flush_block_policy;
 
   std::vector<std::unique_ptr<InternalTblPropColl>> table_properties_collectors;
@@ -987,6 +989,9 @@ BlockBasedTableBuilder::~BlockBasedTableBuilder() {
   delete rep_;
 }
 
+// 1. 调用 r->flush_block_policy->Update() 判断是否需要落盘；
+// 2. 如果是，则调用 Flush() 来将 data block 落盘，继续；
+// 3. 调用 r->data_block.AddWithLastKey() 将 k-v 追加进暂存于内存的 data block 中；
 void BlockBasedTableBuilder::Add(const Slice& key, const Slice& value) {
   Rep* r = rep_;
   assert(rep_->state != Rep::State::kClosed);
@@ -1001,7 +1006,11 @@ void BlockBasedTableBuilder::Add(const Slice& key, const Slice& value) {
     }
 #endif  // !NDEBUG
 
+    // 判断是否需要落盘
+    // data_block是否达到阈值
     auto should_flush = r->flush_block_policy->Update(key, value);
+    // 如果data block能够满足flush的条件，则直接flush datablock的数据到当前bulider
+    // 对应的datablock存储结构中。
     if (should_flush) {
       assert(!r->data_block.empty());
       r->first_key_in_next_block = &key;
@@ -1113,6 +1122,8 @@ void BlockBasedTableBuilder::Add(const Slice& key, const Slice& value) {
   }
 }
 
+// 这个 Flush 和 LSM-Tree 的 Flush 完全是两个东西，只是名字一样而已
+// 就是调用 WriteBlock() 来将一整个 data block 落盘。
 void BlockBasedTableBuilder::Flush() {
   Rep* r = rep_;
   assert(rep_->state != Rep::State::kClosed);
@@ -1136,6 +1147,8 @@ void BlockBasedTableBuilder::Flush() {
   }
 }
 
+// 首先对 data block 进行一此压缩，以降低其大小，接着就是调用另一个 WriteBlock() 来进一步写入
+// 最终执行是通过如下函数执行
 void BlockBasedTableBuilder::WriteBlock(BlockBuilder* block,
                                         BlockHandle* handle,
                                         BlockType block_type) {
@@ -1152,6 +1165,8 @@ void BlockBasedTableBuilder::WriteBlock(BlockBuilder* block,
   WriteBlock(uncompressed_block_data, handle, block_type);
 }
 
+// 新调用的 WriteBlock() 也是对更进一步的调用进行封装
+// 调用链转移至 WriteMaybeCompressedBlock，调用单位仍然没变
 void BlockBasedTableBuilder::WriteBlock(const Slice& uncompressed_block_data,
                                         BlockHandle* handle,
                                         BlockType block_type) {
@@ -1324,6 +1339,8 @@ void BlockBasedTableBuilder::CompressAndVerifyBlock(
   }
 }
 
+// 通过对 file 进行 Append 来将 data block 写入到 file 中
+// 调用链转移至 Append() ，但是调用单位仍然为 data block。
 void BlockBasedTableBuilder::WriteMaybeCompressedBlock(
     const Slice& block_contents, CompressionType comp_type, BlockHandle* handle,
     BlockType block_type, const Slice* uncompressed_block_data) {
@@ -1545,6 +1562,7 @@ Status BlockBasedTableBuilder::InsertBlockInCacheHelper(
   return s;
 }
 
+// 将之前收集的key的数据进行整合，按照filter本身应有的格式进行构建，并格式化到metaindex builer之中
 void BlockBasedTableBuilder::WriteFilterBlock(
     MetaIndexBuilder* meta_index_builder) {
   if (rep_->filter_builder == nullptr || rep_->filter_builder->IsEmpty()) {
@@ -1566,6 +1584,15 @@ void BlockBasedTableBuilder::WriteFilterBlock(
       // See FilterBlockBuilder::Finish() for more on the difference in
       // transferred filter data payload among different FilterBlockBuilder
       // subtypes.
+
+      // Finish函数 通过filter_builder中的key数据 完成多次filter content的构建，
+      //            一下步骤是循环进行，直到builder数据为空
+      // 步骤包括:
+      // 1.从之前添加的key/prefix key的entries 取出数据
+      // 2. 针对每一条entries 通过对应filter策略(目前有full和partition两种)的hash函数
+      //     映射出一个能表示该key是否存在的一个值，编码到 filter之中
+      // 3. 清除临时取出来的entries
+      // 4. 将建立好的fitler的偏移量写入到filter handle之中
       std::unique_ptr<const char[]> filter_data;
       Slice filter_content =
           rep_->filter_builder->Finish(filter_block_handle, &s, &filter_data);
@@ -1586,6 +1613,10 @@ void BlockBasedTableBuilder::WriteFilterBlock(
     }
     rep_->filter_builder->ResetFilterBitsBuilder();
   }
+
+  // 完成之后将 filter的类型以及策略名称组合成一个key，
+  // 和filter_block_handle一起添加到meta_index_builder之中
+  // 用来一起创建索引
   if (ok()) {
     // Add mapping from "<filter_block_prefix>.Name" to location
     // of filter data.
@@ -1597,6 +1628,7 @@ void BlockBasedTableBuilder::WriteFilterBlock(
   }
 }
 
+// 后续统一通过WriteIndexBlock函数写入到存储之中，并添加索引信息到meta_index_builder之中
 void BlockBasedTableBuilder::WriteIndexBlock(
     MetaIndexBuilder* meta_index_builder, BlockHandle* index_block_handle) {
   if (!ok()) {
@@ -1774,6 +1806,7 @@ void BlockBasedTableBuilder::WritePropertiesBlock(
   }
 }
 
+// 最后通过WriteCompressionDictBlock 函数对最终的压缩数据进行整合固化到meta_index_builder之中。
 void BlockBasedTableBuilder::WriteCompressionDictBlock(
     MetaIndexBuilder* meta_index_builder) {
   if (rep_->compression_dict != nullptr &&
@@ -1797,10 +1830,12 @@ void BlockBasedTableBuilder::WriteCompressionDictBlock(
   }
 }
 
+// 通过函数进行固化，并添加到meta_index_builder之中
 void BlockBasedTableBuilder::WriteRangeDelBlock(
     MetaIndexBuilder* meta_index_builder) {
   if (ok() && !rep_->range_del_block.empty()) {
     BlockHandle range_del_block_handle;
+    // 写入之前，先通过Finish函数 对range_del_block数据进行格式的封装。
     WriteMaybeCompressedBlock(rep_->range_del_block.Finish(), kNoCompression,
                               &range_del_block_handle,
                               BlockType::kRangeDeletion);
@@ -1839,6 +1874,15 @@ void BlockBasedTableBuilder::WriteFooter(BlockHandle& metaindex_block_handle,
   }
 }
 
+// 在compaction过程中期，sub_compaction线程构建的Iterator，用来对参与compaction的key进行处理。
+// 保存了一些filter block需要的key信息
+// 保存一些index block所需要的key数据的enties信息。
+
+// 构造compression block，如果我们开启了compression的选项则会构造。
+// 同时依据之前flush添加到datablock中的数据来构造index block和filter block，
+// 用来索引datablock的数据。
+// 因为flush的时候表示一个完整的datablock已经写入完成，这里需要通过一个完整的
+// datablock数据才有必要构造一条indexblock的数据。
 void BlockBasedTableBuilder::EnterUnbuffered() {
   Rep* r = rep_;
   assert(r->state == Rep::State::kBuffered);
@@ -1864,6 +1908,11 @@ void BlockBasedTableBuilder::EnterUnbuffered() {
   //
   // Picked a random number between one and one trillion and then chose the
   // next prime number greater than or equal to it.
+
+  // 抽象代数告诉我们，一个有限循环群（例如模N的整数加法群）可以由一个与N互质的数生成。
+  // 由于N是可变的（缓冲数据块的数量），我们必须选择一个素数以保证与任何N互质。
+  // 这种方法的一个缺点是，当kPrimeGeneratorRemainder接近零或接近kNumBlocksBuffered时，分布会很差。
+  // 我们随机选择了一个介于1到1万亿之间的数，然后选择了下一个大于或等于它的素数。
   const uint64_t kPrimeGenerator = 545055921143ull;
   // Can avoid repeated division by just adding the remainder repeatedly.
   const size_t kPrimeGeneratorRemainder = static_cast<size_t>(
@@ -1909,6 +1958,8 @@ void BlockBasedTableBuilder::EnterUnbuffered() {
   r->verify_dict.reset(new UncompressionDict(
       dict, r->compression_type == kZSTD ||
                 r->compression_type == kZSTDNotFinalCompression));
+  
+  /*借用压缩后的key的信息， 来构造filter entry和index entry*/
 
   auto get_iterator_for_block = [&r](size_t i) {
     auto& data_block = r->data_block_buffers[i];
@@ -1927,6 +1978,8 @@ void BlockBasedTableBuilder::EnterUnbuffered() {
 
   std::unique_ptr<DataBlockIter> iter = nullptr, next_block_iter = nullptr;
 
+  /*针对每一个datablock，构建其filterblock和index block*/
+  // data_block_buffers数组存放的是未经过压缩的datablock数据
   for (size_t i = 0; ok() && i < r->data_block_buffers.size(); ++i) {
     if (iter == nullptr) {
       iter = get_iterator_for_block(i);
@@ -1961,15 +2014,24 @@ void BlockBasedTableBuilder::EnterUnbuffered() {
                                                r->get_offset());
       r->pc_rep->EmitBlock(block_rep);
     } else {
+      /*filter block的构建过程需要依据datablock中一个个key来进行*/
       for (; iter->Valid(); iter->Next()) {
         Slice key = iter->key();
         if (r->filter_builder != nullptr) {
+          // 这里只是创建存在于内存中的fitler_builder结构，
+          // 且将key只是作为一个个string类型的entry保存起来
+      	  // 这个过程并未增加filter的一些算法处理，
+          // 后续在WriteFilterBlock会使用当前构造好的entry通过一系列hash函数构造bloom filter功能。
           r->filter_builder->Add(
               ExtractUserKeyAndStripTimestamp(key, r->ts_sz));
         }
         r->index_builder->OnKeyAdded(key);
       }
       WriteBlock(Slice(data_block), &r->pending_handle, BlockType::kData);
+
+      // 添加index_block
+      // 提升索引datablock的效率之外还想要减少内存的消耗，所以这里会保存一段
+      // 经过压缩的key的数据作为一个data block的偏移索引。
       if (ok() && i + 1 < r->data_block_buffers.size()) {
         assert(next_block_iter != nullptr);
         Slice first_key_in_next_block = next_block_iter->key();
@@ -1999,9 +2061,9 @@ Status BlockBasedTableBuilder::Finish() {
   assert(r->state != Rep::State::kClosed);
   bool empty_data_block = r->data_block.empty();
   r->first_key_in_next_block = nullptr;
-  Flush();
+  Flush(); //再次执行 先尝试将key-value的数据刷到datablock
   if (r->state == Rep::State::kBuffered) {
-    EnterUnbuffered();
+    EnterUnbuffered(); // 依据datablock数据构建index ,filter和compression block数据
   }
   if (r->IsParallelCompressionEnabled()) {
     StopParallelCompression();
@@ -2029,22 +2091,24 @@ Status BlockBasedTableBuilder::Finish() {
   //    5. [meta block: properties]
   //    6. [metaindex block]
   //    7. Footer
+  // 将各个部分写入到meta_index_builder中
   BlockHandle metaindex_block_handle, index_block_handle;
   MetaIndexBuilder meta_index_builder;
-  WriteFilterBlock(&meta_index_builder);
-  WriteIndexBlock(&meta_index_builder, &index_block_handle);
-  WriteCompressionDictBlock(&meta_index_builder);
-  WriteRangeDelBlock(&meta_index_builder);
-  WritePropertiesBlock(&meta_index_builder);
+  WriteFilterBlock(&meta_index_builder); //filter_builder数据添加到 meta_index_builder
+  WriteIndexBlock(&meta_index_builder, &index_block_handle); //添加index_builder
+  WriteCompressionDictBlock(&meta_index_builder); //添加compression block
+  WriteRangeDelBlock(&meta_index_builder); //添加range tombstone
+  WritePropertiesBlock(&meta_index_builder); //添加最终的属性数据
   if (ok()) {
     // flush the meta index block
+    // 将对应的metablock 相关信息写入到meta_index_builder之中，最后通过finish函数固化。
     WriteMaybeCompressedBlock(meta_index_builder.Finish(), kNoCompression,
                               &metaindex_block_handle, BlockType::kMetaIndex);
   }
   if (ok()) {
-    WriteFooter(metaindex_block_handle, index_block_handle);
+    WriteFooter(metaindex_block_handle, index_block_handle); //写Footer数据
   }
-  r->state = Rep::State::kClosed;
+  r->state = Rep::State::kClosed; //最终返回table_builder的close状态，析构当前的table builer
   r->tail_size = r->offset - r->props.tail_start_offset;
 
   Status ret_status = r->CopyStatus();

@@ -8,6 +8,10 @@
 namespace ROCKSDB_NAMESPACE {
 class CompactionMergingIterator : public InternalIterator {
  public:
+ // 将传入的list也就是函数中的children中的所有元素添加到一个vector中，
+ // 再遍历其中的每一个key-value，通过函数 AddToMinHeapOrCheckStatus 构造堆排序的底层结构，
+ // 关于该数据结构中的元素顺序是由用户参数option.comparator指定，默认是 BytewiseComparator 
+ // 支持的lexicographical order，也就是字典顺序。
   CompactionMergingIterator(
       const InternalKeyComparator* comparator, InternalIterator** children,
       int n, bool is_arena_mode,
@@ -347,6 +351,11 @@ void CompactionMergingIterator::AddToMinHeapOrCheckStatus(HeapItem* child) {
   }
 }
 
+// 如果list是空的，则直接返回空
+// 如果只有一个，那么认为这个迭代器本身就是有序的，不需要构建一个堆排序的迭代器
+// （level-0 的sst内部是有序的，之前创建的时候是为level-0每一个sst创建一个list元素；
+// 非level-0的整层都是有序的）
+// 如果多个，那么直接通过CompactionMergingIterator来创建堆排序的迭代器
 InternalIterator* NewCompactionMergingIterator(
     const InternalKeyComparator* comparator, InternalIterator** children, int n,
     std::vector<std::pair<TruncatedRangeDelIterator*,

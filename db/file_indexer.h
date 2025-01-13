@@ -99,6 +99,41 @@ class FileIndexer {
     // A key 70, compared to be larger than 60. 1st and 2nd file can be skipped
     // according to rule (3). LB = 2, RB = 2.
     //
+
+
+    // 在文件搜索期间，将键与最小和最大进行比较
+    // 来自文件元数据。它可能有 3 种可能的结果：
+    // (1) key 小于smallest，意味着它也小于更大。根据“最小<最小”预先计算的索引可以用于提供右界。
+    // (2) key 介于最小和最大之间。
+    //     基于“最小 > 最大”的预先计算的索引可用于提供左边界。
+    //     基于“最大 < 最小”的预先计算的索引可用于提供右界。
+    // (3) 键大于最大，意味着它也大于最小。基于“最大>最大”的预先计算的索引可用于提供左边界。
+    //
+    // 因此，我们需要做：
+    // 将上层文件中的最小 (<=) 和最大键与较低级别的最小键以获得右边界。
+    // 将上层文件中的最小 (>=) 和最大键与下层最大的键以获得左边界。
+    //
+    // 例子：
+    //    level 1：[50 -60]
+    //    level 2：[1 -40]、[45 -55]、[58 -80]
+
+    // level 1 的 smallest 为 50，largest 为 60
+    // smallest_lb 指下一级中恰好包含比 smallest 大的 sstable，故为 1，即 [45, 55]。
+    // smallest_rb 指下一级中恰好包含比 smallest 小的 sstable，故为 1，即 [45, 55]。
+    // largest_lb 指下一级中恰好包含比 largest 大的 sstable，故为 2，即 [58, 80]。
+    // largest_rb 指下一级中恰好包含比 largest 小的 sstable，故为 2，即 [58, 80]。
+
+    // 在 level1 中查找 key 35，没有找到，且在 sstable 左边，因此需要跳到 level2 中的 0 ~ smallest_lb 中去找，即sstable0 和 sstable 1。
+    // key 53 没有找到，且在 sstable 内部，因此需要跳到 level2 的重合区间去找，故范围为 smallest_lb ~ largest_rb，即 sstable1 和 sstable 2。 
+    // key70 没找到，且在 sstable 右边，因此需要跳到 level2 中的 largest_lb ~ 右边界 中去找，即 sstable2 本身。
+
+    // key 35，相比之下小于50，根据规则（1）可以跳过level 2的第三个sst。 LB = 0，RB = 1。
+
+    // key 53，位于 50 和 60 中间。根据规则(2)-a可以跳过level 2的第一个文件。
+    // 因为 60 大于 58导致level 2 的第3个文件不能跳过。LB = 1，RB = 2。
+
+    // key 70，相比大于60。根据规则（3）level 2的第一个和第二个文件可以跳过。LB = 2，RB = 2。
+
     // Point to a left most file in a lower level that may contain a key,
     // which compares greater than smallest of a FileMetaData (upper level)
     int32_t smallest_lb;

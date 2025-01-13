@@ -113,9 +113,12 @@ class WriteThread {
   };
 
   // Information kept for every waiting writer.
+  // WriteBatch 会被封装为一个 WriteThread::Writer 结构体，
+  // 该结构体将存储 WriteBatch、WriteOptions 中的配置以及前后向指针等等，
+  // 所以一个写线程配备一个 Writer
   struct Writer {
-    WriteBatch* batch;
-    bool sync;
+    WriteBatch* batch;  // 本次要 write 的数据，即 WriteBatch 对象
+    bool sync;          // 是否要做 sync
     bool no_slowdown;
     bool disable_wal;
     Env::IOPriority rate_limiter_priority;
@@ -129,15 +132,15 @@ class WriteThread {
     WriteCallback* callback;
     bool made_waitable;          // records lazy construction of mutex and cv
     std::atomic<uint8_t> state;  // write under StateMutex() or pre-link
-    WriteGroup* write_group;
-    SequenceNumber sequence;  // the sequence number to use for the first key
+    WriteGroup* write_group;     // 本次 write 所属的 WiteGroup
+    SequenceNumber sequence;  // the sequence number to use for the first key 本次 write 的第一个数据对象的 sequence number
     Status status;
     Status callback_status;  // status returned by callback->Callback()
 
     std::aligned_storage<sizeof(std::mutex)>::type state_mutex_bytes;
     std::aligned_storage<sizeof(std::condition_variable)>::type state_cv_bytes;
-    Writer* link_older;  // read/write only before linking, or as leader
-    Writer* link_newer;  // lazy, read/write only before linking, or as leader
+    Writer* link_older;  // read/write only before linking, or as leader          前置 Writer
+    Writer* link_newer;  // lazy, read/write only before linking, or as leader    后置 Writer
 
     Writer()
         : batch(nullptr),

@@ -398,12 +398,17 @@ void WriteThread::WaitForStallEndedCount(uint64_t stall_count) {
 }
 
 static WriteThread::AdaptationContext jbg_ctx("JoinBatchGroup");
+
+// 先取出 newest_writer_ ，如果其 stall 了，那么视配置来决定是直接返回还是等待。
+// 之后，将当前 Writer 插入 WriteLink，实际就是把 link_order 指向 newest_writer，然后把自己变为新的 newest_writer_ 。
+// 如果原来的 newest_writer_ 为空，说明当前 Writer 为头一个，则返回 true 表示自己是 Leader，反之返回 false。
 void WriteThread::JoinBatchGroup(Writer* w) {
   TEST_SYNC_POINT_CALLBACK("WriteThread::JoinBatchGroup:Start", w);
   assert(w->batch != nullptr);
 
   bool linked_as_leader = LinkOne(w, &newest_writer_);
 
+  // 插入 WriteLink 后，如果是 Leader，那就把 state 设为 STATE_GROUP_LEADER。
   if (linked_as_leader) {
     SetState(w, STATE_GROUP_LEADER);
   }
@@ -411,7 +416,11 @@ void WriteThread::JoinBatchGroup(Writer* w) {
   TEST_SYNC_POINT_CALLBACK("WriteThread::JoinBatchGroup:Wait", w);
   TEST_SYNC_POINT_CALLBACK("WriteThread::JoinBatchGroup:Wait2", w);
 
+  // 如果不是 Leader，就会调用 AwaitState() 阻塞自己，等待 Leader 给自己设置状态（唤醒）。
   if (!linked_as_leader) {
+    // 不考虑 pipelined 的情况下，被唤醒的条件有两个，如注释所述：
+    // 自己不在 WriteGroup 中，被 WriteGroup 的 Leader 选为新的 Leader。
+    // 在 WriteGroup 中，被 Leader 唤醒。    
     /**
      * Wait util:
      * 1) An existing leader pick us as the new leader when it finishes
@@ -434,6 +443,13 @@ void WriteThread::JoinBatchGroup(Writer* w) {
   }
 }
 
+// 首先，该函数取出 newest_writer_，然后调用 WriteThread::CreateMissingNewerLinks()。
+// 在 JoinBatchGroup 时，构造的是只有后向指针 link_older 的单向链表，而该函数就是从尾部遍历一遍这个链表，
+// 把每一个 Writer 的 link_newer 确定，即变单向为双向。
+
+// 接着，进入循环，从 Leader（也就是自己）开始遍历。如果 w 和 Leader 的配置不吻合，
+// 那就 break，因为 WriteGroup 要保证配置一致。如果吻合，那就加入 WriteGroup 中，
+// 以此类推，最终用 last_writer 来标记 WriteGroup 中的最后一个 Writer。
 size_t WriteThread::EnterAsBatchGroupLeader(Writer* leader,
                                             WriteGroup* write_group) {
   assert(leader->link_older == nullptr);
@@ -667,6 +683,7 @@ void WriteThread::LaunchParallelMemTableWriters(WriteGroup* write_group) {
 static WriteThread::AdaptationContext cpmtw_ctx(
     "CompleteParallelMemTableWriter");
 // This method is called by both the leader and parallel followers
+// 如果当前 Writer 是并行写入中最后一个完成的 Writer，那么返回 true。
 bool WriteThread::CompleteParallelMemTableWriter(Writer* w) {
   auto* write_group = w->write_group;
   if (!w->status.ok()) {
@@ -698,6 +715,11 @@ void WriteThread::ExitAsBatchGroupFollower(Writer* w) {
 }
 
 static WriteThread::AdaptationContext eabgl_ctx("ExitAsBatchGroupLeader");
+
+// 虽然在 EnterAsBatchGroupLeader() 时已经调用过一次 CreateMissingNewerLinks() 
+// 将 WriteLink 由单向链表转变为双向链表，但是在 WriteGroup 写入的过程中，
+// 很有可能会有新的 Write 加入 WriteLink，而新的这一段就是单向链表了，
+// 因此在 Exit 时又调用了一遍 CreateMissingNewerLinks() 确保 WriteLink 为双向链表。
 void WriteThread::ExitAsBatchGroupLeader(WriteGroup& write_group,
                                          Status& status) {
   TEST_SYNC_POINT_CALLBACK("WriteThread::ExitAsBatchGroupLeader:Start",
@@ -814,6 +836,9 @@ void WriteThread::ExitAsBatchGroupLeader(WriteGroup& write_group,
       CreateMissingNewerLinks(head);
       assert(last_writer->link_newer != nullptr);
       assert(last_writer->link_newer->link_older == last_writer);
+
+      // 接着，它会选择新的 Leader，实际上就是 last_writer 的后一个 Writer，
+      // 并且把新 Leader 的 link_order 置空，意为把新旧两个 WriteGroup 断开了。
       last_writer->link_newer->link_older = nullptr;
 
       // Next leader didn't self-identify, because newest_writer_ wasn't
@@ -824,7 +849,7 @@ void WriteThread::ExitAsBatchGroupLeader(WriteGroup& write_group,
     }
     // else nobody else was waiting, although there might already be a new
     // leader now
-
+    // 最后，把所处 WriteGroup 中的所有 Writer 状态都改为 STATE_COMPLETED，意味完成写入。
     while (last_writer != leader) {
       assert(last_writer);
       last_writer->status = status;

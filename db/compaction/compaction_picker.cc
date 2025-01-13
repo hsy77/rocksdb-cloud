@@ -1191,6 +1191,8 @@ void CompactionPicker::PickFilesMarkedForCompaction(
   start_level_inputs->files.clear();
 }
 
+// 如果start_level_为０，也就是level-0的话，才会进行下面的处理，
+// 就是从level-0中得到所有的重合key的文件，然后加入到start_level_inputs中.
 bool CompactionPicker::GetOverlappingL0Files(
     VersionStorageInfo* vstorage, CompactionInputFiles* start_level_inputs,
     int output_level, int* parent_index) {

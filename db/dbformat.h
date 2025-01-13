@@ -37,6 +37,10 @@ class InternalKey;
 // data structures.
 // The highest bit of the value type needs to be reserved to SST tables
 // for them to do more flexible encoding.
+// 值类型被编码为internal keys的最后一个组件。
+// 请勿更改这些枚举值：它们被嵌入在磁盘数据结构中。
+// 值类型的最高位需要保留给SST表，以便它们进行更灵活的编码。
+
 enum ValueType : unsigned char {
   kTypeDeletion = 0x0,
   kTypeValue = 0x1,
@@ -432,6 +436,7 @@ class InternalKey {
 
  public:
   InternalKey() {}  // Leave rep_ as empty to indicate it is invalid
+  // 将userkey ，seq，valuetype ts组成Internal key
   InternalKey(const Slice& _user_key, SequenceNumber s, ValueType t) {
     AppendInternalKey(&rep_, ParsedInternalKey(_user_key, s, t));
   }

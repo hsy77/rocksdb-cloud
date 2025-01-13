@@ -154,6 +154,7 @@ class BlockBasedTableBuilder : public TableBuilder {
   void WriteFooter(BlockHandle& metaindex_block_handle,
                    BlockHandle& index_block_handle);
 
+  // Rep 封装了最核心的内容，其中有两个字段叫作 data_block 和 flush_block_policy
   struct Rep;
   class BlockBasedTablePropertiesCollectorFactory;
   class BlockBasedTablePropertiesCollector;

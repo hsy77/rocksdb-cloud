@@ -422,6 +422,28 @@ enum class CompactionServiceJobStatus : char {
   kUseLocal,
 };
 
+struct CompactionAdditionInfo {
+  double score;
+  uint64_t num_entries;
+  uint64_t num_deletions;
+  uint64_t compensated_file_size;
+  int output_level;
+  int start_level;
+  uint64_t trigger_ms;
+
+  CompactionAdditionInfo(double _score, uint64_t _num_entries,
+                         uint64_t _num_deletions,
+                         uint64_t _compensated_file_size, int _output_level,
+                         int _start_level, uint64_t _trigger_ms)
+      : score(_score),
+        num_entries(_num_entries),
+        num_deletions(_num_deletions),
+        compensated_file_size(_compensated_file_size),
+        output_level(_output_level),
+        start_level(_start_level),
+        trigger_ms(_trigger_ms) {}
+};
+
 struct CompactionServiceJobInfo {
   std::string db_name;
   std::string db_id;
@@ -430,7 +452,9 @@ struct CompactionServiceJobInfo {
                     // restart DB will reset the job_id. `db_id` and
                     // `db_session_id` could help you build unique id across
                     // different DBs and sessions.
-
+                    // job_id的唯一性是局限在当前数据库和会话中的，一旦数据库重启，
+                    // job_id会被重置。而db_id和db_session_id则可以用来在不同的
+                    // 数据库和会话中构建唯一的ID。
   Env::Priority priority;
 
   CompactionServiceJobInfo(std::string db_name_, std::string db_id_,
@@ -446,6 +470,7 @@ struct CompactionServiceJobInfo {
 struct CompactionServiceScheduleResponse {
   std::string scheduled_job_id;  // Generated outside of primary host, unique
                                  // across different DBs and sessions
+                                 // 在主节点外部生成的，并且在不同的数据库和会话中是唯一的。
   CompactionServiceJobStatus status;
   CompactionServiceScheduleResponse(std::string scheduled_job_id_,
                                     CompactionServiceJobStatus status_)
@@ -462,9 +487,13 @@ class CompactionService : public Customizable {
   static const char* Type() { return "CompactionService"; }
 
   // Returns the name of this compaction service.
+  // 返回此压缩服务的名称。
   const char* Name() const override = 0;
 
   // Schedule compaction to be processed remotely.
+  // 安排要远程处理的压缩。
+  // 使用 compaction_service_input 启动远程压缩，该输入可传递给远程端的 DB::OpenAndCompact()。
+  // info 提供用户可能需要了解的信息，包括 job_id。
   virtual CompactionServiceScheduleResponse Schedule(
       const CompactionServiceJobInfo& /*info*/,
       const std::string& /*compaction_service_input*/) {
@@ -474,6 +503,7 @@ class CompactionService : public Customizable {
   }
 
   // Wait for the scheduled compaction to finish from the remote worker
+  // 等待远程worker完成计划的压缩
   virtual CompactionServiceJobStatus Wait(
       const std::string& /*scheduled_job_id*/, std::string* /*result*/) {
     return CompactionServiceJobStatus::kUseLocal;
@@ -481,6 +511,7 @@ class CompactionService : public Customizable {
 
   // Deprecated. Please implement Schedule() and Wait() API to handle remote
   // compaction
+  // 已弃用。请实现 Schedule() 和 Wait() API 来处理远程压实
 
   // Start the remote compaction with `compaction_service_input`, which can be
   // passed to `DB::OpenAndCompact()` on the remote side. `info` provides the
@@ -494,6 +525,7 @@ class CompactionService : public Customizable {
   // Wait for remote compaction to finish.
   virtual CompactionServiceJobStatus WaitForCompleteV2(
       const CompactionServiceJobInfo& /*info*/,
+      CompactionAdditionInfo* /*addition_info*/,
       std::string* /*compaction_service_result*/) {
     return CompactionServiceJobStatus::kUseLocal;
   }
@@ -2308,6 +2340,12 @@ struct CompactionServiceOptionsOverride {
   // `OnSubcompactionCompleted`, etc. Worth mentioning, `OnCompactionBegin` and
   // `OnCompactionCompleted` won't be triggered. They will be triggered on the
   // primary DB side.
+  // 远程压缩工作程序中仅触发事件的子集，例如：
+  // `OnTableFileCreated`, `OnTableFileCreationStarted`,
+  // `ShouldBeNotifiedOnFileIO` `OnSubcompactionBegin`,
+  // `OnSubcompactionCompleted` 等
+  // 值得一提的是 `OnCompactionBegin` 和`OnCompactionCompleted` 不会被触发。
+  // 它们将在主数据库端被触发
   std::vector<std::shared_ptr<EventListener>> listeners;
 
   // statistics is used to collect DB operation metrics, the metrics won't be

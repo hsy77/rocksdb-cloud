@@ -172,6 +172,11 @@ class Directories {
 //
 // Since it's a very large class, the definition of the functions is
 // divided in several db_impl_*.cc files, besides db_impl.cc.
+// 虽然 DB 是 RocksDB 的公共接口，但 DBImpl 是实现它的实际类。它是核心 RocksdB 引擎的入口点。 
+// 所有其他 DB 实现，例如 TransactionDB、BlobDB 等，内部都包装了一个 DBImpl。 
+// 除了实现 DB 接口的函数外，还有一些公共函数供其他内部组件调用。例如，TransactionDB 直接调用 DBImpl::WriteImpl()， 
+// BlobDB 直接调用 DBImpl::GetImpl()。还有一些其他函数供子组件调用。例如，ColumnFamilyHandleImpl 调用 DBImpl::FindObsoleteFiles()。 
+// 由于这是一个非常大的类，函数的定义除了在 db_impl.cc 中，还分布在几个 db_impl_*.cc 文件中。
 class DBImpl : public DB {
  public:
   DBImpl(const DBOptions& options, const std::string& dbname,
@@ -2704,6 +2709,8 @@ class DBImpl : public DB {
   std::deque<FlushRequest> flush_queue_;
   // invariant(column family present in compaction_queue_ <==>
   // ColumnFamilyData::pending_compaction_ == true)
+  
+  // compact的时候RocksDB也有一个队列叫做DBImpl::compaction_queue_.
   std::deque<ColumnFamilyData*> compaction_queue_;
 
   // A map to store file numbers and filenames of the files to be purged

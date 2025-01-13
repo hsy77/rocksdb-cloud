@@ -299,6 +299,7 @@ bool SkipList<Key, Comparator>::KeyIsAfterNode(const Key& key, Node* n) const {
   return (n != nullptr) && (compare_(n->key, key) < 0);
 }
 
+// 查找最后会调用 SkipList 的查找函数
 template <typename Key, class Comparator>
 typename SkipList<Key, Comparator>::Node*
 SkipList<Key, Comparator>::FindGreaterOrEqual(const Key& key) const {
@@ -307,6 +308,10 @@ SkipList<Key, Comparator>::FindGreaterOrEqual(const Key& key) const {
   // to exit early on equality and the result wouldn't even be correct.
   // A concurrent insert might occur after FindLessThan(key) but before
   // we get a chance to call Next(0).
+  // 注意：看起来我们可以通过将这个函数实现为 FindLessThan(key)->Next(0) 来减少重复，
+  // 但我们将无法在相等时提前退出，并且结果甚至可能不正确。
+  // 在 FindLessThan(key) 之后但在我们有机会调用 Next(0) 之前，可能会发生并发插入。
+
   Node* x = head_;
   int level = GetMaxHeight() - 1;
   Node* last_bigger = nullptr;

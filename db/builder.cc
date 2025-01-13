@@ -45,7 +45,7 @@
 #include "util/stop_watch.h"
 
 namespace ROCKSDB_NAMESPACE {
-
+// 不属于任何类，所有 rocksdb 命名空间中均可使用它。
 class TableFactory;
 
 TableBuilder* NewTableBuilder(const TableBuilderOptions& tboptions,
@@ -56,6 +56,27 @@ TableBuilder* NewTableBuilder(const TableBuilderOptions& tboptions,
   return tboptions.ioptions.table_factory->NewTableBuilder(tboptions, file);
 }
 
+// 是 Flush 写入 SST 的入口
+// BuildTable() 只有 Flush 会调用，Compaction 走的是另外一条线。
+// 因为 BuildTable() 是单线程作业，但 Compaction 可能被分为多个 SubCompaction 来多线程作业，
+// 所以不能调用线性的 BuildTable()。
+// 每一个 SubCompaction 写 SST 的入口函数名为 ProcessKeyValueCompaction()，
+// 到 BlockBasedTableBuilder::Add() 的那一步还是会进入相同的调用链。
+
+// 流程：
+// 1，创建 SST 文件，通过 OS；
+// 2，构建 SST 的 TableBuilder，名为 builder；
+// 3，将 iter 重新封装一下，名为 c_iter；
+// 4，通过 c_iter 一条条取出 k-v 对，通过 builder->Add() 往 SST 中写 k-v 对；
+// 5，builder->Finish() 收尾；
+
+// builder 中的落盘是实时的，而不是通过 Finish() 进行统一落盘。
+// 每一次 Add() 都会查看已经写入的大小（暂存在内存中）是否超过一个 block_size_，
+// 如果是，就将该 data block 落盘。
+// Finish() 的工作只是将 SST 除了 data block 之外的内容落盘，
+// 包括 meta block、metaindex block、footer。
+
+// 通过打印日志可知，默认的 block_size 为 4KB
 Status BuildTable(
     const std::string& dbname, VersionSet* versions,
     const ImmutableDBOptions& db_options, const TableBuilderOptions& tboptions,
@@ -87,6 +108,8 @@ Status BuildTable(
                                    /*enable_hash=*/paranoid_file_checks);
   Status s;
   meta->fd.file_size = 0;
+
+  // iter使用前都要SeekToFirst
   iter->SeekToFirst();
   std::unique_ptr<CompactionRangeDelAggregator> range_del_agg(
       new CompactionRangeDelAggregator(&tboptions.internal_comparator,
@@ -145,6 +168,8 @@ Status BuildTable(
       bool use_direct_writes = file_options.use_direct_writes;
       TEST_SYNC_POINT_CALLBACK("BuildTable:create_file", &use_direct_writes);
 #endif  // !NDEBUG
+
+      // 创建SST文件
       IOStatus io_s = NewWritableFile(fs, fname, &file, file_options);
       assert(s.ok());
       s = io_s;
@@ -170,6 +195,7 @@ Status BuildTable(
           ioptions.file_checksum_gen_factory.get(),
           tmp_set.Contains(FileType::kTableFile), false));
 
+      // 生成TableBuilder
       builder = NewTableBuilder(tboptions, file_writer.get());
     }
 
@@ -194,6 +220,8 @@ Status BuildTable(
             : nullptr);
 
     const std::atomic<bool> kManualCompactionCanceledFalse{false};
+
+    // 重新封装iter
     CompactionIterator c_iter(
         iter, ucmp, &merge, kMaxSequenceNumber, &snapshots,
         earliest_write_conflict_snapshot, job_snapshot, snapshot_checker, env,
@@ -212,6 +240,9 @@ Status BuildTable(
 
     std::string key_after_flush_buf;
     std::string value_buf;
+
+    // 从c_iter中逐条取出k-v对，插入SST
+    // 调用链由 BuilderTable() 转移至 Add()，调用单位由 FlushJob 转变为每条 k-v 对。
     c_iter.SeekToFirst();
     for (; c_iter.Valid(); c_iter.Next()) {
       const Slice& key = c_iter.key();
@@ -258,6 +289,8 @@ Status BuildTable(
       if (!s.ok()) {
         break;
       }
+      // 通过 builder->Add() 往 SST 中写 k-v 对；
+      // 调用链由 BuilderTable() 转移至 Add()，调用单位由 FlushJob 转变为每条 k-v 对。
       builder->Add(key_after_flush, value_after_flush);
 
       s = meta->UpdateBoundaries(key_after_flush, value_after_flush,
@@ -337,6 +370,8 @@ Status BuildTable(
           ioptions.compaction_style == CompactionStyle::kCompactionStyleFIFO
               ? meta->file_creation_time
               : meta->oldest_ancester_time);
+      
+      // 收尾
       s = builder->Finish();
     }
     if (io_status->ok()) {

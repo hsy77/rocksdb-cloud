@@ -362,6 +362,9 @@ Status CompactionOutputs::AddToOutput(
     // We don't consider range tombstone for bottommost level since:
     // 1. there is no grandparent and hence no overlap to consider
     // 2. range tombstone may be dropped at bottommost level.
+    // 我们不考虑最底层的范围墓碑，因为：
+    // 没有祖父级，因此没有重叠需要考虑。
+    // 范围墓碑可能会在最底层被丢弃。
     return s;
   }
   const Slice& key = c_iter.key();

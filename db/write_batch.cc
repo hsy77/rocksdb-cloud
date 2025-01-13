@@ -774,6 +774,7 @@ SequenceNumber WriteBatchInternal::Sequence(const WriteBatch* b) {
   return SequenceNumber(DecodeFixed64(b->rep_.data()));
 }
 
+// WriteBatch::rep_ 的首个元素就是 seq num，这里该函数将其赋值为最新的 seq num。
 void WriteBatchInternal::SetSequence(WriteBatch* b, SequenceNumber seq) {
   EncodeFixed64(b->rep_.data(), seq);
 }
@@ -3062,6 +3063,9 @@ class MemTableInserter : public WriteBatch::Handler {
 // 2) During Write(), in a single-threaded write thread
 // 3) During Write(), in a concurrent context where memtables has been cloned
 // The reason is that it calls memtables->Seek(), which has a stateful cache
+
+// WriteBatchInternal::InsertInto() 是向 memtable 写入的入口函数，
+// 它有三个重载，分别用于 WriteGroup、WriteBatch 以及 Writer
 Status WriteBatchInternal::InsertInto(
     WriteThread::WriteGroup& write_group, SequenceNumber sequence,
     ColumnFamilyMemTables* memtables, FlushScheduler* flush_scheduler,

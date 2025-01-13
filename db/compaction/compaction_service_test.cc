@@ -3,43 +3,74 @@
 //  COPYING file in the root directory) and Apache 2.0 License
 //  (found in the LICENSE.Apache file in the root directory).
 
+// CompactionService 的测试套件，旨在验证自定义的 CompactionService 
+// 实现（MyTestCompactionService）在不同情境下的正确性和稳定性。
 
-#include "db/db_test_util.h"
-#include "port/stack_trace.h"
-#include "table/unique_id_impl.h"
+#include "compaction_service.h"    //加的头文件
+#include "db/db_test_util.h"       // RocksDB 测试相关的工具和基类。
+#include "port/stack_trace.h"      // 堆栈跟踪，通常用于调试。
+#include "table/unique_id_impl.h"  // 提供生成唯一ID的实现。
 
 namespace ROCKSDB_NAMESPACE {
 
 class MyTestCompactionService : public CompactionService {
  public:
+ // 构造函数，接收数据库路径、配置选项、统计信息、事件监听器和表属性收集器工厂等参数，
+ // 并初始化内部成员变量。
   MyTestCompactionService(
       std::string db_path, Options& options,
       std::shared_ptr<Statistics>& statistics,
       std::vector<std::shared_ptr<EventListener>>& listeners,
       std::vector<std::shared_ptr<TablePropertiesCollectorFactory>>
           table_properties_collector_factories)
-      : db_path_(std::move(db_path)),
-        options_(options),
-        statistics_(statistics),
+      : db_path_(std::move(db_path)), // 数据库的路径，指向存储数据文件的目录。
+        options_(options),            // RocksDB 的配置信息，包含各种操作选项。
+        statistics_(statistics),      // 统计信息的共享指针，用于收集和报告数据库的各种性能和操作指标。
         start_info_("na", "na", "na", 0, Env::TOTAL),
         wait_info_("na", "na", "na", 0, Env::TOTAL),
-        listeners_(listeners),
+        listeners_(listeners),        // 事件监听器的共享指针集合，用于监听和响应数据库操作事件。
         table_properties_collector_factories_(
-            std::move(table_properties_collector_factories)) {}
+            std::move(table_properties_collector_factories)) {} // 表属性收集器工厂的共享指针集合，用于在压缩过程中收集表的自定义属性。
 
   static const char* kClassName() { return "MyTestCompactionService"; }
 
+  // 返回类名，用于标识 CompactionService 的实现。
   const char* Name() const override { return kClassName(); }
 
+  // 调度压缩任务，生成唯一ID并将任务信息存储在内部数据结构中。
+  // 返回 CompactionServiceScheduleResponse，指示任务是否成功调度。
+
+  // Schedule 方法负责接收来自 RocksDB 的压缩任务请求，生成一个唯一的任务ID，
+  // 并将任务的输入和信息存储起来。通过使用互斥锁确保线程安全，并且允许在测试过程中
+  // 通过覆盖标志来模拟不同的任务调度结果。
+
+  // info：包含压缩任务的元数据和配置信息，例如数据库名称、ID、会话ID、优先级等。
+  // compaction_service_input：压缩任务的具体输入数据，可能包括需要压缩的文件列表、范围等。
   CompactionServiceScheduleResponse Schedule(
       const CompactionServiceJobInfo& info,
       const std::string& compaction_service_input) override {
+
+    // 在多线程环境下，Schedule 方法的执行是安全的，不会引起数据竞争。
     InstrumentedMutexLock l(&mutex_);
+
+    // 将传入的 info 复制到成员变量 start_info_，记录压缩任务的开始信息。
     start_info_ = info;
+
+    // 确保传入的压缩任务信息中的数据库名称与当前服务实例的数据库路径一致，以防止调度错误的任务。
     assert(info.db_name == db_path_);
+
+    // 调用 RocksDB 的环境接口生成一个唯一的任务ID，用于标识和跟踪该压缩任务。
     std::string unique_id = Env::Default()->GenerateUniqueId();
+
+    // 映射任务ID到具体的压缩输入数据。
     jobs_.emplace(unique_id, compaction_service_input);
+
+    // 映射任务ID到任务的元信息。
     infos_.emplace(unique_id, info);
+
+    // unique_id：生成的唯一任务ID。
+    // 如果 is_override_start_status_ 为 true，则使用 override_start_status_ 作为任务的初始状态。
+    // 否则，默认为 CompactionServiceJobStatus::kSuccess，表示任务成功调度。
     CompactionServiceScheduleResponse response(
         unique_id, is_override_start_status_
                        ? override_start_status_
@@ -47,11 +78,21 @@ class MyTestCompactionService : public CompactionService {
     return response;
   }
 
+  // 等待压缩任务完成，根据任务ID检索任务输入，执行压缩，并返回任务状态。
+  // scheduled_job_id：任务的唯一ID，由 Schedule 方法生成并分配。
+  // result：指向字符串的指针，用于存储压缩操作的结果。
   CompactionServiceJobStatus Wait(const std::string& scheduled_job_id,
                                   std::string* result) override {
+    // 用于存储从 jobs_ 中检索到的压缩输入数据。
     std::string compaction_input;
     {
+      // 使用 InstrumentedMutexLock 对 mutex_ 加锁，
+      // 确保访问和修改 jobs_ 和 infos_ 的操作是线程安全的。
       InstrumentedMutexLock l(&mutex_);
+
+      // 查找任务ID在 jobs_ 中的对应压缩输入。
+      // 如果任务ID不存在，返回失败状态。
+      // 如果存在，移动压缩输入到 compaction_input，并从 jobs_ 中删除该任务记录，避免重复处理。
       auto job_index = jobs_.find(scheduled_job_id);
       if (job_index == jobs_.end()) {
         return CompactionServiceJobStatus::kFailure;
@@ -59,6 +100,9 @@ class MyTestCompactionService : public CompactionService {
       compaction_input = std::move(job_index->second);
       jobs_.erase(job_index);
 
+      // 查找任务ID在 infos_ 中的对应任务信息。
+      // 如果任务ID不存在，返回失败状态。
+      // 如果存在，移动任务信息到 wait_info_，并从 infos_ 中删除该任务记录。
       auto info_index = infos_.find(scheduled_job_id);
       if (info_index == infos_.end()) {
         return CompactionServiceJobStatus::kFailure;
@@ -66,9 +110,18 @@ class MyTestCompactionService : public CompactionService {
       wait_info_ = std::move(info_index->second);
       infos_.erase(info_index);
     }
+
+    // 在测试中，允许通过标志 is_override_wait_status_ 覆盖默认的等待状态，
+    // 返回预设的状态而不执行实际的压缩。这对于模拟不同的任务结果非常有用。
     if (is_override_wait_status_) {
       return override_wait_status_;
     }
+
+    // 创建并配置一个 CompactionServiceOptionsOverride 对象，
+    // 确保压缩操作使用与当前服务实例一致的配置选项。
+    // 包括环境 (env)、校验和生成工厂、比较器、合并操作符、压缩过滤器、
+    // 前缀提取器、表工厂、SST 分区工厂和统计信息。
+    // 如果存在事件监听器和表属性收集器工厂，则将它们也包含在压缩选项中。
     CompactionServiceOptionsOverride options_override;
     options_override.env = options_.env;
     options_override.file_checksum_gen_factory =
@@ -91,16 +144,32 @@ class MyTestCompactionService : public CompactionService {
           table_properties_collector_factories_;
     }
 
+    // 准备一个 OpenAndCompactOptions 对象，用于控制实际的压缩操作。
+    // 特别是，通过指针 options.canceled 允许外部控制压缩任务的取消。
     OpenAndCompactOptions options;
     options.canceled = &canceled_;
 
+    // 调用 RocksDB 的 DB::OpenAndCompact 方法执行实际的压缩操作。
+    // options：OpenAndCompactOptions，控制压缩行为（如取消）。
+    // db_path_：数据库路径。
+    // db_path_ + "/" + scheduled_job_id：目标路径，通常指向一个临时或特定于任务的目录。
+    // compaction_input：具体的压缩输入数据。
+    // result：用于存储压缩结果的输出参数。
+    // options_override：覆盖的压缩选项，确保使用正确的配置执行压缩。
     Status s =
         DB::OpenAndCompact(options, db_path_, db_path_ + "/" + scheduled_job_id,
                            compaction_input, result, options_override);
+    
+    // 在测试中，允许通过标志 is_override_wait_result_ 覆盖实际的压缩结果，
+    // 为特定的测试场景提供控制。
     if (is_override_wait_result_) {
       *result = override_wait_result_;
     }
+
+    // 原子地增加已完成的压缩任务计数器，供测试验证使用。
     compaction_num_.fetch_add(1);
+
+    // 根据 OpenAndCompact 的执行结果返回相应的任务状态。
     if (s.ok()) {
       return CompactionServiceJobStatus::kSuccess;
     } else {
@@ -108,11 +177,14 @@ class MyTestCompactionService : public CompactionService {
     }
   }
 
+  // 获取已完成的压缩任务数量。
   int GetCompactionNum() { return compaction_num_.load(); }
 
+  // 获取任务开始和等待时的相关信息。
   CompactionServiceJobInfo GetCompactionInfoForStart() { return start_info_; }
   CompactionServiceJobInfo GetCompactionInfoForWait() { return wait_info_; }
 
+  // 用于测试中覆盖默认的任务状态和结果。
   void OverrideStartStatus(CompactionServiceJobStatus s) {
     is_override_start_status_ = true;
     override_start_status_ = s;
@@ -128,20 +200,22 @@ class MyTestCompactionService : public CompactionService {
     override_wait_result_ = std::move(str);
   }
 
+  // 重置所有覆盖状态。
   void ResetOverride() {
     is_override_wait_result_ = false;
     is_override_start_status_ = false;
     is_override_wait_status_ = false;
   }
 
+  // 设置是否取消正在进行的压缩任务。
   void SetCanceled(bool canceled) { canceled_ = canceled; }
 
  private:
-  InstrumentedMutex mutex_;
-  std::atomic_int compaction_num_{0};
-  std::map<std::string, std::string> jobs_;
-  std::map<std::string, CompactionServiceJobInfo> infos_;
-  const std::string db_path_;
+  InstrumentedMutex mutex_; // 用于线程安全的互斥锁。
+  std::atomic_int compaction_num_{0}; // 记录压缩任务数量。
+  std::map<std::string, std::string> jobs_; // 存储任务输入的映射。
+  std::map<std::string, CompactionServiceJobInfo> infos_; // 存储任务信息的映射。
+  const std::string db_path_;   // 存储初始化时传入的参数。
   Options options_;
   std::shared_ptr<Statistics> statistics_;
   CompactionServiceJobInfo start_info_;
@@ -160,12 +234,17 @@ class MyTestCompactionService : public CompactionService {
   std::atomic_bool canceled_{false};
 };
 
+// 类定义
 class CompactionServiceTest : public DBTestBase {
  public:
+ // 通过调用基类 DBTestBase 的构造函数，初始化测试环境。
   explicit CompactionServiceTest()
       : DBTestBase("compaction_service_test", true) {}
 
  protected:
+ // 配置并重新打开数据库以使用自定义的 CompactionService
+ // 配置数据库选项以使用 MyTestCompactionService，然后销毁并重新打开数据库，
+ // 创建多个列族（Column Families）。
   void ReopenWithCompactionService(Options* options) {
     options->env = env_;
     primary_statistics_ = CreateDBStatistics();
@@ -180,15 +259,18 @@ class CompactionServiceTest : public DBTestBase {
     CreateAndReopenWithCF({"cf_1", "cf_2", "cf_3"}, *options);
   }
 
+  // 获取压缩器和主数据库的统计信息。
   Statistics* GetCompactorStatistics() { return compactor_statistics_.get(); }
 
   Statistics* GetPrimaryStatistics() { return primary_statistics_.get(); }
 
+  // 获取当前使用的 MyTestCompactionService 实例。
   MyTestCompactionService* GetCompactionService() {
     CompactionService* cs = compaction_service_.get();
     return static_cast_with_check<MyTestCompactionService>(cs);
   }
 
+  // 生成测试数据，插入多个键值对并刷新到磁盘。可选地手动移动文件到特定层级。
   void GenerateTestData(bool move_files_manually = false) {
     // Generate 20 files @ L2 Per CF
     for (int cf_id = 0; cf_id < static_cast<int>(handles_.size()); cf_id++) {
@@ -219,6 +301,7 @@ class CompactionServiceTest : public DBTestBase {
     }
   }
 
+  // 验证数据的正确性，确保压缩后的数据符合预期。
   void VerifyTestData() {
     for (int cf_id = 0; cf_id < static_cast<int>(handles_.size()); cf_id++) {
       for (int i = 0; i < 200; i++) {
@@ -242,6 +325,9 @@ class CompactionServiceTest : public DBTestBase {
   std::shared_ptr<CompactionService> compaction_service_;
 };
 
+// 测试基本压缩功能
+// 测试自动压缩是否正常工作，验证统计信息和压缩次数。
+// 模拟压缩失败的情况，通过 SyncPoint 覆盖压缩状态，并确保系统能够正确处理压缩失败。
 TEST_F(CompactionServiceTest, BasicCompactions) {
   Options options = CurrentOptions();
   ReopenWithCompactionService(&options);
@@ -321,6 +407,8 @@ TEST_F(CompactionServiceTest, BasicCompactions) {
   Close();
 }
 
+// 测试手动触发压缩
+// 禁用自动压缩，手动触发压缩范围，验证压缩次数和数据正确性。
 TEST_F(CompactionServiceTest, ManualCompaction) {
   Options options = CurrentOptions();
   options.disable_auto_compactions = true;
@@ -358,6 +446,8 @@ TEST_F(CompactionServiceTest, ManualCompaction) {
   VerifyTestData();
 }
 
+// 测试在远程端取消压缩任务
+// 测试在压缩任务开始前和进行中取消压缩任务，确保系统能够正确处理中止操作。
 TEST_F(CompactionServiceTest, CancelCompactionOnRemoteSide) {
   Options options = CurrentOptions();
   options.disable_auto_compactions = true;
@@ -403,6 +493,8 @@ TEST_F(CompactionServiceTest, CancelCompactionOnRemoteSide) {
   VerifyTestData();
 }
 
+// 测试压缩任务启动失败的情况
+// 覆盖 Schedule 方法的响应为失败，确保系统能够正确处理启动失败的压缩任务。
 TEST_F(CompactionServiceTest, FailedToStart) {
   Options options = CurrentOptions();
   options.disable_auto_compactions = true;
@@ -421,6 +513,8 @@ TEST_F(CompactionServiceTest, FailedToStart) {
   ASSERT_TRUE(s.IsIncomplete());
 }
 
+// 测试压缩任务返回无效结果
+// 覆盖 Wait 方法返回无效结果，验证系统能够检测并处理无效结果。
 TEST_F(CompactionServiceTest, InvalidResult) {
   Options options = CurrentOptions();
   options.disable_auto_compactions = true;
@@ -439,6 +533,8 @@ TEST_F(CompactionServiceTest, InvalidResult) {
   ASSERT_FALSE(s.ok());
 }
 
+// 测试子压缩的功能
+// 配置多个子压缩任务，确保系统能够正确处理并发的子压缩任务。
 TEST_F(CompactionServiceTest, SubCompaction) {
   Options options = CurrentOptions();
   options.max_subcompactions = 10;
@@ -478,6 +574,9 @@ class PartialDeleteCompactionFilter : public CompactionFilter {
   const char* Name() const override { return "PartialDeleteCompactionFilter"; }
 };
 
+ // 测试压缩过滤器的功能
+ // 使用自定义的压缩过滤器（PartialDeleteCompactionFilter），
+ // 在压缩过程中部分删除键值对，验证过滤器的效果。
 TEST_F(CompactionServiceTest, CompactionFilter) {
   Options options = CurrentOptions();
   std::unique_ptr<CompactionFilter> delete_comp_filter(
@@ -502,6 +601,8 @@ TEST_F(CompactionServiceTest, CompactionFilter) {
   ASSERT_GE(my_cs->GetCompactionNum(), 1);
 }
 
+// 测试快照与压缩的交互
+// 创建快照，进行压缩，验证快照期间的数据一致性。
 TEST_F(CompactionServiceTest, Snapshot) {
   Options options = CurrentOptions();
   ReopenWithCompactionService(&options);
@@ -523,6 +624,8 @@ TEST_F(CompactionServiceTest, Snapshot) {
   db_->ReleaseSnapshot(s1);
 }
 
+// 测试并发压缩任务
+// 配置多个后台线程，触发并发压缩任务，验证系统在高并发下的表现和数据正确性。
 TEST_F(CompactionServiceTest, ConcurrentCompaction) {
   Options options = CurrentOptions();
   options.level0_file_num_compaction_trigger = 100;
@@ -553,6 +656,8 @@ TEST_F(CompactionServiceTest, ConcurrentCompaction) {
   ASSERT_EQ(FilesPerLevel(), "0,0,10");
 }
 
+// 测试压缩任务信息的获取
+// 触发压缩任务，获取并验证压缩任务的信息，如数据库名称、ID、会话ID和优先级。
 TEST_F(CompactionServiceTest, CompactionInfo) {
   Options options = CurrentOptions();
   ReopenWithCompactionService(&options);
@@ -618,6 +723,7 @@ TEST_F(CompactionServiceTest, CompactionInfo) {
   ASSERT_EQ(Env::BOTTOM, info.priority);
 }
 
+// 测试自动压缩时的本地回退机制
 TEST_F(CompactionServiceTest, FallbackLocalAuto) {
   Options options = CurrentOptions();
   ReopenWithCompactionService(&options);
@@ -647,6 +753,7 @@ TEST_F(CompactionServiceTest, FallbackLocalAuto) {
   ASSERT_EQ(primary_statistics->getTickerCount(REMOTE_COMPACT_WRITE_BYTES), 0);
 }
 
+// 测试手动压缩时的本地回退机制
 TEST_F(CompactionServiceTest, FallbackLocalManual) {
   Options options = CurrentOptions();
   options.disable_auto_compactions = true;
@@ -705,6 +812,8 @@ TEST_F(CompactionServiceTest, FallbackLocalManual) {
   VerifyTestData();
 }
 
+// 测试远程事件监听器的功能
+// 使用自定义的事件监听器，监听压缩过程中的事件，如子压缩开始/完成、文件创建等，确保事件被正确触发和处理。
 TEST_F(CompactionServiceTest, RemoteEventListener) {
   class RemoteEventListenerTest : public EventListener {
    public:
@@ -787,6 +896,8 @@ TEST_F(CompactionServiceTest, RemoteEventListener) {
   }
 }
 
+// 测试表属性收集器的功能
+// 使用自定义的表属性收集器，在生成的 SST 文件中添加用户属性，验证属性收集器的效果和正确性。
 TEST_F(CompactionServiceTest, TablePropertiesCollector) {
   const static std::string kUserPropertyName = "TestCount";
 
@@ -879,6 +990,7 @@ TEST_F(CompactionServiceTest, TablePropertiesCollector) {
 
 }  // namespace ROCKSDB_NAMESPACE
 
+// 安装堆栈跟踪处理器，初始化 Google Test 框架，注册自定义对象，然后运行所有测试用例。
 int main(int argc, char** argv) {
   ROCKSDB_NAMESPACE::port::InstallStackTraceHandler();
   ::testing::InitGoogleTest(&argc, argv);

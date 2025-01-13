@@ -437,6 +437,7 @@ enum Tickers : uint32_t {
   BACKUP_WRITE_BYTES,
 
   // Remote compaction read/write statistics
+  // 远程压缩读/写统计
   REMOTE_COMPACT_READ_BYTES,
   REMOTE_COMPACT_WRITE_BYTES,
 

@@ -116,6 +116,10 @@ Status SerializeReplicationLogManifestWrite(
 
 // Find File in LevelFilesBrief data structure
 // Within an index range defined by left and right
+
+// 该函数其实就是个 lower_bound，核心是比较器
+// 比较器会将 sstable 中的 largest 与目标 key 来进行比较，小于在返回 true。
+// 故该函数就是返回最早的满足 largest >= 目标 key 的 sstable 下标。
 int FindFileInRange(const InternalKeyComparator& icmp,
                     const LevelFilesBrief& file_level, const Slice& key,
                     uint32_t left, uint32_t right) {
@@ -161,6 +165,11 @@ Status OverlapWithIterator(const Comparator* ucmp,
 // levels. Therefore we are guaranteed that if we find data
 // in a smaller level, later levels are irrelevant (unless we
 // are MergeInProgress).
+// 帮助选择下一个文件来搜索特定密钥的类。
+// 逐级搜索并返回文件。
+// 我们可以逐级搜索，因为条目永远不会跨越levels。
+// 因此我们保证如果我们在较小的级别中找到数据，后面的级别是无关紧要的
+//（除非我们是合并进行中）。（这个不懂 TOTHINK）
 class FilePicker {
  public:
   FilePicker(const Slice& user_key, const Slice& ikey,
@@ -196,6 +205,8 @@ class FilePicker {
 
   int GetCurrentLevel() const { return curr_level_; }
 
+  // 该函数通过 curr_index_in_curr_level_ 来获取当前查找到的 sstable，
+  // 然后比较目标 key 和 smallest 以及 largest 的大小，结果存在 cmp_smallest 与 cmp_largest 中。
   FdWithKeyRange* GetNextFile() {
     while (!search_ended_) {  // Loops over different levels.
       while (curr_index_in_curr_level_ < curr_file_level_->num_files) {
@@ -239,12 +250,12 @@ class FilePicker {
           }
           // Key falls out of current file's range
           if (cmp_smallest < 0 || cmp_largest > 0) {
-            if (curr_level_ == 0) {
+            if (curr_level_ == 0) { //在level 0
               ++curr_index_in_curr_level_;
               continue;
             } else {
               // Search next level.
-              break;
+              break;  //如果目标 key 不在当前 sstable，那么直接 break，
             }
           }
         }
@@ -274,28 +285,35 @@ class FilePicker {
   bool IsHitFileLastInLevel() { return is_hit_file_last_in_level_; }
 
  private:
-  unsigned int num_levels_;
-  unsigned int curr_level_;
-  unsigned int returned_file_level_;
-  unsigned int hit_file_level_;
-  int32_t search_left_bound_;
-  int32_t search_right_bound_;
-  autovector<LevelFilesBrief>* level_files_brief_;
-  bool search_ended_;
-  bool is_hit_file_last_in_level_;
-  LevelFilesBrief* curr_file_level_;
-  unsigned int curr_index_in_curr_level_;
-  unsigned int start_index_in_curr_level_;
-  Slice user_key_;
-  Slice ikey_;
+  unsigned int num_levels_;         // 磁盘中一共有多少层 level
+  unsigned int curr_level_;         // 当前所在的 level
+  unsigned int returned_file_level_;// 返回的 sstable 所在的 level
+  unsigned int hit_file_level_;     // 命中的 sstable 所在的 level
+  int32_t search_left_bound_;       // 下一层查找的左边界 sstable 下标
+  int32_t search_right_bound_;      // 下一层查找的右边界 sstable 下标
+  autovector<LevelFilesBrief>* level_files_brief_; // 所有 level 的 LevelFilesBrief 组成的一个 vector
+  bool search_ended_;                        // 查找是否结束
+  bool is_hit_file_last_in_level_;           // 命中的 sstable 是否为当前 level 中的最后一个
+  LevelFilesBrief* curr_file_level_;         // LevelFilesBrief 类型，为一个 level 中的所有 sstable 组成的数组的头节点
+  unsigned int curr_index_in_curr_level_;    // 当前 sstable 位于当前 level 的下标
+  unsigned int start_index_in_curr_level_;   // 当前 level 的查找起点 sstable 的下标
+  Slice user_key_;                           // 目标 user_key（实际就是 ikey_ 中的 user_key）
+  Slice ikey_;                               // LookupKey
   FileIndexer* file_indexer_;
   const Comparator* user_comparator_;
   const InternalKeyComparator* internal_comparator_;
 
   // Setup local variables to search next level.
   // Returns false if there are no more levels to search.
+  // 设置局部变量以搜索下一级。
+  // 如果没有更多级别可供搜索，则返回 false。
+
+  // RocksDB 对下一个 level 中 sstable 的定位，就是直接定到其中一个。
+  // 第一步通过 FileIndexer 来确定 search_left_bound_ 和 search_right_bound_ ，
+  // 第二步的实现，PrepareNextLevel() 会直接定位到 level+1 中一个具体的 sstable 上，
+  // 而不是一个范围，所以每一层只检查一个 sstable 就行。
   bool PrepareNextLevel() {
-    curr_level_++;
+    curr_level_++; // 进入了下一层
     while (curr_level_ < num_levels_) {
       curr_file_level_ = &(*level_files_brief_)[curr_level_];
       if (curr_file_level_->num_files == 0) {
@@ -318,6 +336,9 @@ class FilePicker {
       // newest to oldest. In the context of merge-operator, this can occur at
       // any level. Otherwise, it only occurs at Level-0 (since Put/Deletes
       // are always compacted into a single entry).
+
+      // 其次就是通过 search_left_bound_ 和 search_right_bound_ 
+      // 来确定 start_index，这个 start_index 就是下一层中定位的 sstable 下标。
       int32_t start_index;
       if (curr_level_ == 0) {
         // On Level-0, we read through all files to check for overlap.
@@ -326,6 +347,8 @@ class FilePicker {
         // On Level-n (n>=1), files are sorted. Binary search to find the
         // earliest file whose largest key >= ikey. Search left bound and
         // right bound are used to narrow the range.
+        // 在level-n（n>=1）上，对文件进行排序。 二进制搜索查找最大键 >= ikey 的最早文件。 
+        // 搜索左界和右界用于缩小搜索范围。
         if (search_left_bound_ <= search_right_bound_) {
           if (search_right_bound_ == FileIndexer::kLevelMaxIndex) {
             search_right_bound_ =
@@ -335,6 +358,8 @@ class FilePicker {
           // determined based on user key, it is still possible the lookup key
           // falls to the right of `search_right_bound_`'s corresponding file.
           // So, pass a limit one higher, which allows us to detect this case.
+
+          // startIndex 就是最早的满足 largest >= 目标 key 的 sstable 下标
           start_index =
               FindFileInRange(*internal_comparator_, *curr_file_level_, ikey_,
                               static_cast<uint32_t>(search_left_bound_),
@@ -680,6 +705,7 @@ class FilePickerMultiGet {
 
         // Setup file search bound for the next level based on the
         // comparison results
+        // level大于0，通过fileindexer定位level+1中的sstable
         if (curr_level_ > 0) {
           file_indexer_->GetNextLevelIndex(
               curr_level_, fp_ctx.curr_index_in_curr_level, cmp_smallest,
@@ -747,6 +773,9 @@ class FilePickerMultiGet {
 
   // Setup local variables to search next level.
   // Returns false if there are no more levels to search.
+  // 通过 PrepareNextLevel() 来进入 level+1 中，查找点就是刚刚定位的 sstable。
+  // 非 level0 中，判断失败立刻 break，进入下一层。说明每一层只检查一个 sstable，
+  // 而不是在某一个范围内遍历，这个很重要！
   bool PrepareNextLevel() {
     if (curr_level_ == 0) {
       MultiGetRange::Iterator mget_iter = current_level_range_.begin();
@@ -2400,6 +2429,7 @@ void Version::MultiGetBlob(
   }
 }
 
+// SST中查找key
 void Version::Get(const ReadOptions& read_options, const LookupKey& k,
                   PinnableSlice* value, PinnableWideColumns* columns,
                   std::string* timestamp, Status* status,
@@ -2432,6 +2462,11 @@ void Version::Get(const ReadOptions& read_options, const LookupKey& k,
   BlobFetcher blob_fetcher(this, read_options);
 
   assert(pinned_iters_mgr);
+
+  // 1.用 get_context 来维护查找过程中的上下文，类似与在 memtable 中查找时的 saver。
+  // GetContext类用来保存查询过程中的一些上下文，比如目标 key、查询状态、时间戳等等
+  // 第 7 个参数 pinnable_val（PinnableSlice* ）的值取决于 do_merge，
+  // 如果 do_merge 为 true，则传入 value（PinnableSlice*），反之则传入 nullptr。
   GetContext get_context(
       user_comparator(), merge_operator_, info_log_, db_statistics_,
       status->ok() ? GetContext::kNotFound : GetContext::kMerge, user_key,
@@ -2445,11 +2480,14 @@ void Version::Get(const ReadOptions& read_options, const LookupKey& k,
   if (merge_operator_) {
     pinned_iters_mgr->StartPinning();
   }
-
+  // 2.创建一个文件选择器 FilePicker，名为 fp。
+  // 通过传入的 user_key （LookupKey 中的）来获取到可能位于的 sstable 里。
   FilePicker fp(user_key, ikey, &storage_info_.level_files_brief_,
                 storage_info_.num_non_empty_levels_,
                 &storage_info_.file_indexer_, user_comparator(),
                 internal_comparator());
+
+  // 3.通过 fp.GetNextFile() 得到可能存在目标 key 的 sstable。
   FdWithKeyRange* f = fp.GetNextFile();
 
   while (f != nullptr) {
@@ -2466,6 +2504,10 @@ void Version::Get(const ReadOptions& read_options, const LookupKey& k,
         GetPerfLevel() >= PerfLevel::kEnableTimeExceptForMutex &&
         get_perf_context()->per_level_perf_context_enabled;
     StopWatchNano timer(clock_, timer_enabled /* auto_start */);
+
+    // 4.通过 table_cache_->Get() 在上述 sstable 中查找目标 key，如果没找到就重新执行步骤 3 来迭代。
+    // 当 FilePicker 找到一个 sstable 后，RocksDB 会调用 TableCache::Get() 来在这个 sstable 中查找，
+    // 并把一些信息保存在 get_context 中·
     *status = table_cache_->Get(
         read_options, *internal_comparator(), *f->file_metadata, ikey,
         &get_context, mutable_cf_options_.block_protection_bytes_per_key,
@@ -2492,6 +2534,8 @@ void Version::Get(const ReadOptions& read_options, const LookupKey& k,
         db_statistics_ != nullptr) {
       get_context.ReportCounters();
     }
+
+    // 当返回后，通过 get_context 来判断返回的结果是否符合预期。
     switch (get_context.State()) {
       case GetContext::kNotFound:
         // Keep searching in other files
@@ -2560,6 +2604,7 @@ void Version::Get(const ReadOptions& read_options, const LookupKey& k,
         *status = Status::Corruption(Status::SubCode::kMergeOperatorFailed);
         return;
     }
+    // 如果不符合预期，那么会重新调用 GetNextLevelIndex() 重复上述过程。
     f = fp.GetNextFile();
   }
   if (db_statistics_ != nullptr) {
@@ -3480,6 +3525,13 @@ bool ShouldChangeFileTemperature(const ImmutableOptions& ioptions,
 }
 }  // anonymous namespace
 
+// compaction_score_ 和 compaction_level_ 在这个函数更新，
+// 这个函数会区别leve-0和其他level的处理逻辑
+// - 首先会计算level-0下所有文件的大小(total_size)以及文件个数(num_sorted_runs).
+// - 用文件个数除以level0_file_num_compaction_trigger来得到对应的score
+// - 针对levelStyle的compaction，需要从上面的score和(total_size/max_bytes_for_level_base)取
+//   最大值,作为当前参与compaction的score。因为有的时候level-0在密集型IO场景下会瞬时达到很大，
+//   超过level-1的max_bytes_for_level_base，所以需要针对这种场景设置score
 void VersionStorageInfo::ComputeCompactionScore(
     const ImmutableOptions& immutable_options,
     const MutableCFOptions& mutable_cf_options) {
@@ -3492,6 +3544,11 @@ void VersionStorageInfo::ComputeCompactionScore(
   // In order to provide flexibility for reducing score while still
   // maintaining it to be over 1.0, we scale the original score by 10x
   // if it is larger than 1.0.
+
+  // 从历史上看，分数的定义是一个级别中的实际字节数除以该级别的目标大小，1.0 是触发压缩的阈值。
+  // 分数越高，优先级越高。
+  // 现在我们保持压缩触发条件，但考虑更多的优先级因素，同时仍然保持 1.0 的阈值。
+  // 为了在保持分数超过 1.0 的同时提供降低分数的灵活性，我们将原始分数乘以 10 倍（如果它大于 1.0）。
   const double kScoreScale = 10.0;
   int max_output_level = MaxOutputLevel(immutable_options.allow_ingest_behind);
   for (int level = 0; level <= MaxInputLevel(); level++) {
@@ -3508,13 +3565,18 @@ void VersionStorageInfo::ComputeCompactionScore(
       // file size is small (perhaps because of a small write-buffer
       // setting, or very high compression ratios, or lots of
       // overwrites/deletions).
+
+      // 我们特别处理级别 0，通过限制文件数量而不是字节数量，原因有二：
+      // （1）使用较大的写缓冲区大小时，最好不要进行太多的级别 0 压缩。
+      // （2）级别 0 中的文件在每次读取时都会合并，因此当单个文件大小较小时
+      // （可能是由于写缓冲区设置较小、压缩比较高或大量覆盖/删除），我们希望避免文件过多。
       int num_sorted_runs = 0;
       uint64_t total_size = 0;
       for (auto* f : files_[level]) {
         total_downcompact_bytes += static_cast<double>(f->fd.GetFileSize());
         if (!f->being_compacted) {
-          total_size += f->compensated_file_size;
-          num_sorted_runs++;
+          total_size += f->compensated_file_size; //所有level-0文件总大小
+          num_sorted_runs++; //所有文件个数
         }
       }
       if (compaction_style_ == kCompactionStyleUniversal) {
@@ -3607,6 +3669,7 @@ void VersionStorageInfo::ComputeCompactionScore(
       }
     } else {  // level > 0
       // Compute the ratio of current size to size limit.
+      // 计算当前大小与大小限制的比率。 （感觉就是目前的大小超过限制大小比值）
       uint64_t level_bytes_no_compacting = 0;
       uint64_t level_total_bytes = 0;
       for (auto f : files_[level]) {
@@ -3616,6 +3679,8 @@ void VersionStorageInfo::ComputeCompactionScore(
         }
       }
       if (!immutable_options.level_compaction_dynamic_level_bytes) {
+        // 算分数
+        // MaxBytesForLevel(level)：获取当前level的最大的文件大小
         score = static_cast<double>(level_bytes_no_compacting) /
                 MaxBytesForLevel(level);
       } else {
@@ -4736,6 +4801,8 @@ uint64_t VersionStorageInfo::MaxNextLevelOverlappingBytes() {
   return result;
 }
 
+// 获取当前level的最大的文件大小
+// 数组level_max_bytes_ 的更新是在CalculateBaseBytes函数中进行，
 uint64_t VersionStorageInfo::MaxBytesForLevel(int level) const {
   // Note: the result for level zero is not really used since we set
   // the level-0 compaction threshold based on number of files.
@@ -4744,6 +4811,20 @@ uint64_t VersionStorageInfo::MaxBytesForLevel(int level) const {
   return level_max_bytes_[level];
 }
 
+// 在其中的更新过程还是与我们option设置的一个参数相关
+
+// level_compaction_dynamic_level_bytes，如果这个配置被置为false，
+// 意味着每一层的大小都是固定的，则会有如下的更新规则：
+// 如果是level-1 ，那么将其level_max_bytes_设置为options.max_bytes_for_level_base 这样的配置
+// 假如: max_bytes_for_level_base = 1024 ，max_bytes_for_level_multiplier = 10
+// 则L1,L2,L3 依次为：1024，10240，102400的大小
+
+// 假如level_compaction_dynamic_level_bytes 被设置为true，即每次计算出来的level_max_bytes可能会不一样
+// 这个参数主要是为了保证LSM tree密集IO压力下仍然能够保证合理的树型结构（良好的树型结构能够提供优秀的查找性能），
+// 这里的计算方式是这样的：
+// 找到当前树形结构数据量最多的一层，作为Target_Size(Ln)
+// 比如当前系统中最大的level的 target size是10G，num_levels = 6,max_bytes_for_level_multiplier = 10
+// 那么从L6-L1依次每一层level的大小如下，10G,1G,102M,10.2M,1.02M,102KB
 void VersionStorageInfo::CalculateBaseBytes(const ImmutableOptions& ioptions,
                                             const MutableCFOptions& options) {
   // Special logic to set number of sorted runs.
@@ -7229,12 +7310,20 @@ void VersionSet::AddLiveFiles(std::vector<uint64_t>* live_table_files,
   }
 }
 
+// 这个函数构造迭代器的逻辑同样区分level-0和level-其他
+// 先获取当前sub_compact所属的cfd
+// 针对level-0,为其中的每一个sst文件构建一个table_cache迭代器，放入list之中
+// 针对其他非level-0的层，每一层直接创建一个及联的迭代器并放入list之中。也就是这个迭代器从它的start就能够顺序访问到该层最后一个sst文件的最后一个key
+// 因为非level-0的sst文件之间本身是有序的，不像level-0的sst文件之间可能有重叠。
+// 将所有层的迭代器添加到一个迭代器数组之中，拿到该数组，通过 NewMergingIterator 迭代器维护一个底层的排序堆结构，完成所有层之间的key-value的排序
 InternalIterator* VersionSet::MakeInputIterator(
     const ReadOptions& read_options, const Compaction* c,
     RangeDelAggregator* range_del_agg,
     const FileOptions& file_options_compactions,
     const std::optional<const Slice>& start,
     const std::optional<const Slice>& end) {
+      
+  // 获取到当前sub_compact的cfd
   auto cfd = c->column_family_data();
   // Level-0 files have to be merged together.  For other levels,
   // we will make a concatenating iterator per level.
@@ -7254,6 +7343,7 @@ InternalIterator* VersionSet::MakeInputIterator(
   size_t num = 0;
   for (size_t which = 0; which < c->num_input_levels(); which++) {
     if (c->input_levels(which)->num_files != 0) {
+      // 针对level-0中的每一个sst文件，构造一个table_cache的迭代器
       if (c->level(which) == 0) {
         const LevelFilesBrief* flevel = c->input_levels(which);
         for (size_t i = 0; i < flevel->num_files; i++) {
@@ -7292,6 +7382,7 @@ InternalIterator* VersionSet::MakeInputIterator(
         }
       } else {
         // Create concatenating iterator for the files from this level
+        // 对于非level-0的层，直接将该层构造一整体的迭代器
         TruncatedRangeDelIterator*** tombstone_iter_ptr = nullptr;
         list[num++] = new LevelIterator(
             cfd->table_cache(), read_options, file_options_compactions,
@@ -7308,6 +7399,8 @@ InternalIterator* VersionSet::MakeInputIterator(
     }
   }
   assert(num <= space);
+
+  // 最后将获取到的迭代器数组交给 NewCompactionMergingIterator ，进行排序结构的维护。
   InternalIterator* result = NewCompactionMergingIterator(
       &c->column_family_data()->internal_comparator(), list,
       static_cast<int>(num), range_tombstones);

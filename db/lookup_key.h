@@ -16,6 +16,9 @@
 
 namespace ROCKSDB_NAMESPACE {
 
+// LookupKey 和普通的 key 差不多，也是存在 user_key、 
+// internal_key 和 memtable_key 的形式
+
 // A helper class useful for DBImpl::Get()
 class LookupKey {
  public:
@@ -26,11 +29,13 @@ class LookupKey {
 
   ~LookupKey();
 
+  // start_ 就是 memtable_key
   // Return a key suitable for lookup in a MemTable.
   Slice memtable_key() const {
     return Slice(start_, static_cast<size_t>(end_ - start_));
   }
 
+  // kstart_ 就是 internal_key
   // Return an internal key (suitable for passing to an internal iterator)
   Slice internal_key() const {
     return Slice(kstart_, static_cast<size_t>(end_ - kstart_));

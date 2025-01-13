@@ -29,6 +29,8 @@ size_t FileIndexer::LevelIndexSize(size_t level) const {
   return next_level_index_[level].num_index;
 }
 
+// 查找下一层文件
+// 结合比较结果与 FileIndexer 中的四个字段，计算出 search_left_bound_ 与 search_right_bound_，即下一层的查找范围。
 void FileIndexer::GetNextLevelIndex(const size_t level, const size_t file_index,
                                     const int cmp_smallest,
                                     const int cmp_largest, int32_t* left_bound,

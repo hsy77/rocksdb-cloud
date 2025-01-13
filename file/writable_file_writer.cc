@@ -61,6 +61,18 @@ IOStatus WritableFileWriter::Create(const std::shared_ptr<FileSystem>& fs,
   return io_s;
 }
 
+// 也是通过缓冲区 buf_ 来缓存一定的写入
+// 写入分为 direct_io 和非 direct_io，
+// 分析 direct_io：
+// 1. 对写入进行一定的准备工作；
+// 2. 判断 buf_ 剩余的空间够不够传进来的 data block 写入，如果不够，分配更多的空间，
+//    当然，不能一直分配，有个上限，叫作 max_buffer_size_；
+// 3. 如果没有 direct_io，xxx（这里先不考虑），后续都是 direct_io 的分支；
+// 4. 再次判断 buf_ 的空间够不够，如果 buf_ 的空间足够，把传进来的 data block 给 Append() 进去；
+// 5. 如果不够，一点点将 data block 给 Append() 进去。注意，什么叫一点点，而不是全部 Append()。
+//    Append() 函数最高只能将 buf_ 追加到上限，因此到 buf_ 空间不够时，剩余多少就追加多少。
+// 6. 继续 5，如果 data block 还有剩，说明 buf_ 满了，需要落盘，这是就调用 Flush() 将其落盘，
+//    然后清空 buf_，将剩下的 data block 追加进去。
 IOStatus WritableFileWriter::Append(const IOOptions& opts, const Slice& data,
                                     uint32_t crc32c_checksum) {
   if (seen_error()) {
@@ -71,6 +83,8 @@ IOStatus WritableFileWriter::Append(const IOOptions& opts, const Slice& data,
                GetFileWriteHistograms(hist_type_, opts.io_activity));
 
   const IOOptions io_options = FinalizeIOOptions(opts);
+
+  // 要写入的 data block
   const char* src = data.data();
   size_t left = data.size();
   IOStatus s;
@@ -80,7 +94,8 @@ IOStatus WritableFileWriter::Append(const IOOptions& opts, const Slice& data,
 
   // Calculate the checksum of appended data
   UpdateFileChecksum(data);
-
+  
+  // 准备工作
   {
     IOSTATS_TIMER_GUARD(prepare_write_nanos);
     TEST_SYNC_POINT("WritableFileWriter::Append:BeforePrepareWrite");
@@ -89,6 +104,7 @@ IOStatus WritableFileWriter::Append(const IOOptions& opts, const Slice& data,
   }
 
   // See whether we need to enlarge the buffer to avoid the flush
+  // 判断是否需要分配给 buf 更多的空间
   if (buf_.Capacity() - buf_.CurrentSize() < left) {
     for (size_t cap = buf_.Capacity();
          cap < max_buffer_size_;  // There is still room to increase
@@ -123,6 +139,7 @@ IOStatus WritableFileWriter::Append(const IOOptions& opts, const Slice& data,
     // size is enough. Otherwise, we will directly write it down.
     if (use_direct_io() || (buf_.Capacity() - buf_.CurrentSize()) >= left) {
       if ((buf_.Capacity() - buf_.CurrentSize()) >= left) {
+        // 分支1：buf_空间够
         size_t appended = buf_.Append(src, left);
         if (appended != left) {
           s = IOStatus::Corruption("Write buffer append failure");
@@ -130,6 +147,10 @@ IOStatus WritableFileWriter::Append(const IOOptions& opts, const Slice& data,
         buffered_data_crc32c_checksum_ = crc32c::Crc32cCombine(
             buffered_data_crc32c_checksum_, crc32c_checksum, appended);
       } else {
+        // 分支2：direct_io但buf_空间不够
+        // buf_ 满了就下刷，没满就不管。
+        // 调用链转移至 WritableFileWriter::Flush() ，调用单位由 data block 转移至 
+        // WritableFileWriter 中的 buf_ 。
         while (left > 0) {
           size_t appended = buf_.Append(src, left);
           buffered_data_crc32c_checksum_ =
@@ -146,6 +167,7 @@ IOStatus WritableFileWriter::Append(const IOOptions& opts, const Slice& data,
         }
       }
     } else {
+      // 分支3：没有direct_io且buf_空间不够
       assert(buf_.CurrentSize() == 0);
       buffered_data_crc32c_checksum_ = crc32c_checksum;
       s = WriteBufferedWithChecksum(io_options, src, left);
@@ -341,6 +363,8 @@ IOStatus WritableFileWriter::Close(const IOOptions& opts) {
 
 // write out the cached data to the OS cache or storage if direct I/O
 // enabled
+// WriteDirectWithChecksum() 和 WriteDirect() 内容几乎一样，只是前者多了校验和的内容。
+// 我们看后者即可，至此，调用链转移至 WriteDirect() ，调用单位仍然为 WritableFileWriter 中的 buf_。
 IOStatus WritableFileWriter::Flush(const IOOptions& opts) {
   if (seen_error()) {
     return AssertFalseAndGetStatusForPrevError();
@@ -514,8 +538,10 @@ IOStatus WritableFileWriter::SyncInternal(const IOOptions& opts,
   }
 
   if (use_fsync) {
+    // Fsync() 最终调用了 fsync()
     s = writable_file_->Fsync(opts, nullptr);
   } else {
+    // Sync() 最终调用了 fdatasync()
     s = writable_file_->Sync(opts, nullptr);
   }
   if (ShouldNotifyListeners()) {
@@ -771,6 +797,7 @@ void WritableFileWriter::Crc32cHandoffChecksumCalculation(const char* data,
 // whole number of pages to be written again on the next flush because we can
 // only write on aligned
 // offsets.
+// 一点一点 地逐步将 buf_ 给写入文件，具体每次写多少，由传入的 op_rate_limiter_priority 来决定
 IOStatus WritableFileWriter::WriteDirect(const IOOptions& opts) {
   if (seen_error()) {
     assert(false);
@@ -802,9 +829,11 @@ IOStatus WritableFileWriter::WriteDirect(const IOOptions& opts) {
   char checksum_buf[sizeof(uint32_t)];
   Env::IOPriority rate_limiter_priority_used = opts.rate_limiter_priority;
 
+  // 开始写入
   while (left > 0) {
     // Check how much is allowed
     size_t size = left;
+    // 从IO限制器中得到本次写入的大小
     if (rate_limiter_ != nullptr &&
         rate_limiter_priority_used != Env::IO_TOTAL) {
       size = rate_limiter_->RequestToken(left, buf_.Alignment(),
@@ -820,6 +849,9 @@ IOStatus WritableFileWriter::WriteDirect(const IOOptions& opts) {
         start_ts = FileOperationInfo::StartNow();
       }
       // direct writes must be positional
+      // 执行写入
+      // rate_limiter 分配的 size，就是 PositionedAppend() 一次要写入的 size。
+      // 调用链转移至 PositionedAppend() ，调用单位由 buf_ 转移至 rate_limiter 分配的 size。
       if (perform_data_verification_) {
         Crc32cHandoffChecksumCalculation(src, size, checksum_buf);
         v_info.checksum = Slice(checksum_buf, sizeof(uint32_t));
