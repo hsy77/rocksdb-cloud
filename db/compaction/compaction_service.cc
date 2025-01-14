@@ -84,7 +84,7 @@ CompactionResult TriggerCompactionLambda(const std::string& function_name, const
 namespace ROCKSDB_NAMESPACE {
 
 // 启动压缩任务
-CompactionServiceScheduleResponse MyTestCompactionService::Schedule(
+CompactionServiceScheduleResponse MyTestCompactionService::StartV2(
     const CompactionServiceJobInfo& info,
     const std::string& compaction_service_input) {
 
@@ -101,8 +101,7 @@ CompactionServiceScheduleResponse MyTestCompactionService::Schedule(
   if (is_override_start_status_) {
     return override_start_status_;
   }
-  CompactionServiceScheduleResponse response(s);
-  return response;
+  return s;
 }
 
 // 等待任务完成并处理结果
@@ -155,17 +154,6 @@ CompactionServiceJobStatus MyTestCompactionService::WaitForCompleteV2(
 
   OpenAndCompactOptions options;
   options.canceled = &canceled_;
-
-  // 填充 CompactionAdditionInfo
-  CompactionAdditionInfo addition_info;
-
-  addition_info.set_score(compaction_addition_info->score);
-  addition_info.set_num_entries(compaction_addition_info->num_entries);
-  addition_info.set_num_deletions(compaction_addition_info->num_deletions);
-  addition_info.set_compensated_file_size(
-      compaction_addition_info->compensated_file_size);
-  addition_info.set_output_level(compaction_addition_info->output_level());
-  addition_info.set_start_level(compaction_addition_info->start_level());
 
   // 获取 trigger_ms
   uint64_t trigger_ms = compaction_addition_info->trigger_ms();

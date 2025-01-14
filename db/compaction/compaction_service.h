@@ -25,12 +25,8 @@ class MyTestCompactionService : public CompactionService {
 
   const char* Name() const override { return kClassName(); }
 
-  // CompactionServiceJobStatus StartV2( // 改成了schedule名字，改回去了，返回值不同
-  //     const CompactionServiceJobInfo& info,
-  //     const std::string& compaction_service_input) override;
-
-  CompactionServiceScheduleResponse Schedule( //返回response
-      const CompactionServiceJobInfo& /*info*/,
+  CompactionServiceJobStatus StartV2( // 改成了schedule名字，改回去了，返回值不同
+      const CompactionServiceJobInfo& info,
       const std::string& compaction_service_input) override;
 
   CompactionServiceJobStatus WaitForCompleteV2( 
