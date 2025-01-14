@@ -8,6 +8,7 @@
 #include <iostream>
 #include <string>
 #include <thread>
+#include <memory>
 
 // 使用 nlohmann::json
 using json = nlohmann::json;
@@ -19,7 +20,6 @@ struct CompactionResult {
     uint64_t process_latency;
     uint64_t open_db_latency;
 };
-
 
 // 序列化 Compaction 任务参数为 JSON 字符串
 std::string SerializeCompactionTask(const std::string& db_path, 
@@ -36,15 +36,15 @@ std::string SerializeCompactionTask(const std::string& db_path,
 
 // 调用 Lambda 函数
 CompactionResult TriggerCompactionLambda(const std::string& function_name, const std::string& payload) {
-    Aws::Client::ClientConfiguration clientConfig;
-    clientConfig.region = Aws::Region::US_EAST_1; // 替换为您的区域
-
-    Aws::Lambda::LambdaClient lambda_client(clientConfig);
+    Aws::Lambda::LambdaClient lambda_client;
 
     Aws::Lambda::Model::InvokeRequest invoke_request;
     invoke_request.SetFunctionName(function_name);
-    invoke_request.SetInvocationType(Aws::Lambda::Model::InvocationType::RequestResponse); // 同步调用
-    invoke_request.SetPayload(Aws::Utils::ByteBuffer((unsigned char*)payload.c_str(), payload.length()));
+    
+    // 使用 SetBody 设置请求负载
+    auto payload_stream = Aws::MakeShared<Aws::StringStream>("InvokeRequestPayload");
+    (*payload_stream) << payload;
+    invoke_request.SetBody(payload_stream);
 
     auto outcome = lambda_client.Invoke(invoke_request);
 
@@ -53,7 +53,9 @@ CompactionResult TriggerCompactionLambda(const std::string& function_name, const
     if (outcome.IsSuccess()) {
         auto& result_payload = outcome.GetResult().GetPayload();
         std::stringstream ss;
-        ss << std::istreambuf_iterator<char>(result_payload);
+        
+        // 使用 rdbuf() 将整个缓冲区内容插入到 stringstream
+        ss << result_payload.rdbuf();
         std::string response_json = ss.str();
 
         // 解析响应
@@ -192,12 +194,14 @@ CompactionServiceJobStatus MyTestCompactionService::WaitForCompleteV2(
       try {
           json response = json::parse(lambda_result.message);
           *compaction_service_result = response["message"].get<std::string>();
-          *compact_process_latency = response["process_latency"].get<uint64_t>();
-          *open_db_latency = response["open_db_latency"].get<uint64_t>();
+          compaction_addition_info->process_latency = lambda_result.process_latency;
+          compaction_addition_info->open_db_latency = lambda_result.open_db_latency;
 
           // 更新 compaction_addition_info
           compaction_addition_info->trigger_ms = lambda_result.process_latency;
-          compaction_addition_info->num_entries = lambda_result.open_db_latency;
+          // 注意：根据原代码逻辑，这里可能需要调整字段赋值
+          // 例如：
+          // compaction_addition_info->num_entries = lambda_result.open_db_latency;
 
           compaction_num_.fetch_add(1);
           return CompactionServiceJobStatus::kSuccess;
