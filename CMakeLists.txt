@@ -981,7 +981,8 @@ set(SOURCES
         cloud/cloud_scheduler.cc
         cloud/cloud_storage_provider.cc
         cloud/cloud_file_deletion_scheduler.cc
-        db/db_impl/replication_codec.cc)
+        db/db_impl/replication_codec.cc
+        db/compaction/compaction_service.cc)
 
 list(APPEND SOURCES
   utilities/transactions/lock/range/range_tree/lib/locktree/concurrent_tree.cc
@@ -1532,6 +1533,30 @@ if(WITH_TESTS)
   set(TESTUTILLIB testutillib${ARTIFACT_SUFFIX})
   add_library(${TESTUTILLIB} STATIC ${TESTUTIL_SOURCE})
   target_link_libraries(${TESTUTILLIB} ${ROCKSDB_LIB} ${FOLLY_LIBS})
+
+  # Find AWS Lambda Runtime
+  # Assuming you have the AWS Lambda Runtime as a submodule or installed in a known path
+  # You might need to adjust the path accordingly
+  find_path(AWS_LAMBDA_RUNTIME_INCLUDE_DIR aws/lambda-runtime/runtime.h)
+  find_library(AWS_LAMBDA_RUNTIME_LIB aws-lambda-runtime)
+
+  if(NOT AWS_LAMBDA_RUNTIME_INCLUDE_DIR OR NOT AWS_LAMBDA_RUNTIME_LIB)
+    message(FATAL_ERROR "AWS Lambda Runtime not found. Please install it or set the AWS_LAMBDA_RUNTIME_INCLUDE_DIR and AWS_LAMBDA_RUNTIME_LIB manually.")
+  endif()
+
+  # Find nlohmann::json (assuming it's installed via a package manager)
+  find_package(nlohmann_json 3.2.0 REQUIRED)
+
+  # Targets compaction_service
+  add_executable(lambda_server db/compaction/remote_compaction/lambda_server.cc)
+
+
+  target_link_libraries(lambda_server 
+  ${ROCKSDB_LIB}
+  ${AWS_LAMBDA_RUNTIME_LIB}
+  nlohmann_json::nlohmann_json
+  )
+
   if(MSVC)
     set_target_properties(${TESTUTILLIB} PROPERTIES COMPILE_FLAGS "/Fd${CMAKE_CFG_INTDIR}/testutillib${ARTIFACT_SUFFIX}.pdb")
   endif()

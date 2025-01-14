@@ -10,6 +10,7 @@
 
 #include "db/builder.h"
 #include "db/db_impl/db_impl.h"
+#include "db/compaction/compaction_service.h"
 #include "db/error_handler.h"
 #include "db/periodic_task_scheduler.h"
 #include "env/composite_env_wrapper.h"
@@ -1987,6 +1988,21 @@ Status DBImpl::Open(const DBOptions& db_options, const std::string& dbname,
                     const std::vector<ColumnFamilyDescriptor>& column_families,
                     std::vector<ColumnFamilyHandle*>* handles, DB** dbptr,
                     const bool seq_per_batch, const bool batch_per_txn) {
+                      
+  //添加调用自己的compaction 服务
+  std::vector<std::shared_ptr<TablePropertiesCollectorFactory>>
+      remote_table_properties_collector_factories;
+  Options compaction_options;
+  auto& tmp_options = const_cast<DBOptions&>(db_options);
+  auto& compaction_stats =
+      const_cast<std::shared_ptr<Statistics>&>(db_options.statistics);
+  auto& remote_listeners =
+      const_cast<std::vector<std::shared_ptr<EventListener>>&>(
+          db_options.listeners);
+  tmp_options.compaction_service = std::make_shared<MyTestCompactionService>(
+      dbname, compaction_options, compaction_stats, remote_listeners,
+      remote_table_properties_collector_factories);
+
   const WriteOptions write_options(Env::IOActivity::kDBOpen);
   const ReadOptions read_options(Env::IOActivity::kDBOpen);
 

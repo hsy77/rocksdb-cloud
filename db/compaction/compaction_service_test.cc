@@ -3,162 +3,162 @@
 //  COPYING file in the root directory) and Apache 2.0 License
 //  (found in the LICENSE.Apache file in the root directory).
 
-
+#include "compaction_service.h"
 #include "db/db_test_util.h"
 #include "port/stack_trace.h"
 #include "table/unique_id_impl.h"
 
 namespace ROCKSDB_NAMESPACE {
 
-class MyTestCompactionService : public CompactionService {
- public:
-  MyTestCompactionService(
-      std::string db_path, Options& options,
-      std::shared_ptr<Statistics>& statistics,
-      std::vector<std::shared_ptr<EventListener>>& listeners,
-      std::vector<std::shared_ptr<TablePropertiesCollectorFactory>>
-          table_properties_collector_factories)
-      : db_path_(std::move(db_path)),
-        options_(options),
-        statistics_(statistics),
-        start_info_("na", "na", "na", 0, Env::TOTAL),
-        wait_info_("na", "na", "na", 0, Env::TOTAL),
-        listeners_(listeners),
-        table_properties_collector_factories_(
-            std::move(table_properties_collector_factories)) {}
+// class MyTestCompactionService : public CompactionService {
+//  public:
+//   MyTestCompactionService(
+//       std::string db_path, Options& options,
+//       std::shared_ptr<Statistics>& statistics,
+//       std::vector<std::shared_ptr<EventListener>>& listeners,
+//       std::vector<std::shared_ptr<TablePropertiesCollectorFactory>>
+//           table_properties_collector_factories)
+//       : db_path_(std::move(db_path)),
+//         options_(options),
+//         statistics_(statistics),
+//         start_info_("na", "na", "na", 0, Env::TOTAL),
+//         wait_info_("na", "na", "na", 0, Env::TOTAL),
+//         listeners_(listeners),
+//         table_properties_collector_factories_(
+//             std::move(table_properties_collector_factories)) {}
 
-  static const char* kClassName() { return "MyTestCompactionService"; }
+//   static const char* kClassName() { return "MyTestCompactionService"; }
 
-  const char* Name() const override { return kClassName(); }
+//   const char* Name() const override { return kClassName(); }
 
-  CompactionServiceScheduleResponse Schedule(
-      const CompactionServiceJobInfo& info,
-      const std::string& compaction_service_input) override {
-    InstrumentedMutexLock l(&mutex_);
-    start_info_ = info;
-    assert(info.db_name == db_path_);
-    std::string unique_id = Env::Default()->GenerateUniqueId();
-    jobs_.emplace(unique_id, compaction_service_input);
-    infos_.emplace(unique_id, info);
-    CompactionServiceScheduleResponse response(
-        unique_id, is_override_start_status_
-                       ? override_start_status_
-                       : CompactionServiceJobStatus::kSuccess);
-    return response;
-  }
+//   CompactionServiceScheduleResponse Schedule(
+//       const CompactionServiceJobInfo& info,
+//       const std::string& compaction_service_input) override {
+//     InstrumentedMutexLock l(&mutex_);
+//     start_info_ = info;
+//     assert(info.db_name == db_path_);
+//     std::string unique_id = Env::Default()->GenerateUniqueId();
+//     jobs_.emplace(unique_id, compaction_service_input);
+//     infos_.emplace(unique_id, info);
+//     CompactionServiceScheduleResponse response(
+//         unique_id, is_override_start_status_
+//                        ? override_start_status_
+//                        : CompactionServiceJobStatus::kSuccess);
+//     return response;
+//   }
 
-  CompactionServiceJobStatus Wait(const std::string& scheduled_job_id,
-                                  std::string* result) override {
-    std::string compaction_input;
-    {
-      InstrumentedMutexLock l(&mutex_);
-      auto job_index = jobs_.find(scheduled_job_id);
-      if (job_index == jobs_.end()) {
-        return CompactionServiceJobStatus::kFailure;
-      }
-      compaction_input = std::move(job_index->second);
-      jobs_.erase(job_index);
+//   CompactionServiceJobStatus Wait(const std::string& scheduled_job_id,
+//                                   std::string* result) override {
+//     std::string compaction_input;
+//     {
+//       InstrumentedMutexLock l(&mutex_);
+//       auto job_index = jobs_.find(scheduled_job_id);
+//       if (job_index == jobs_.end()) {
+//         return CompactionServiceJobStatus::kFailure;
+//       }
+//       compaction_input = std::move(job_index->second);
+//       jobs_.erase(job_index);
 
-      auto info_index = infos_.find(scheduled_job_id);
-      if (info_index == infos_.end()) {
-        return CompactionServiceJobStatus::kFailure;
-      }
-      wait_info_ = std::move(info_index->second);
-      infos_.erase(info_index);
-    }
-    if (is_override_wait_status_) {
-      return override_wait_status_;
-    }
-    CompactionServiceOptionsOverride options_override;
-    options_override.env = options_.env;
-    options_override.file_checksum_gen_factory =
-        options_.file_checksum_gen_factory;
-    options_override.comparator = options_.comparator;
-    options_override.merge_operator = options_.merge_operator;
-    options_override.compaction_filter = options_.compaction_filter;
-    options_override.compaction_filter_factory =
-        options_.compaction_filter_factory;
-    options_override.prefix_extractor = options_.prefix_extractor;
-    options_override.table_factory = options_.table_factory;
-    options_override.sst_partitioner_factory = options_.sst_partitioner_factory;
-    options_override.statistics = statistics_;
-    if (!listeners_.empty()) {
-      options_override.listeners = listeners_;
-    }
+//       auto info_index = infos_.find(scheduled_job_id);
+//       if (info_index == infos_.end()) {
+//         return CompactionServiceJobStatus::kFailure;
+//       }
+//       wait_info_ = std::move(info_index->second);
+//       infos_.erase(info_index);
+//     }
+//     if (is_override_wait_status_) {
+//       return override_wait_status_;
+//     }
+//     CompactionServiceOptionsOverride options_override;
+//     options_override.env = options_.env;
+//     options_override.file_checksum_gen_factory =
+//         options_.file_checksum_gen_factory;
+//     options_override.comparator = options_.comparator;
+//     options_override.merge_operator = options_.merge_operator;
+//     options_override.compaction_filter = options_.compaction_filter;
+//     options_override.compaction_filter_factory =
+//         options_.compaction_filter_factory;
+//     options_override.prefix_extractor = options_.prefix_extractor;
+//     options_override.table_factory = options_.table_factory;
+//     options_override.sst_partitioner_factory = options_.sst_partitioner_factory;
+//     options_override.statistics = statistics_;
+//     if (!listeners_.empty()) {
+//       options_override.listeners = listeners_;
+//     }
 
-    if (!table_properties_collector_factories_.empty()) {
-      options_override.table_properties_collector_factories =
-          table_properties_collector_factories_;
-    }
+//     if (!table_properties_collector_factories_.empty()) {
+//       options_override.table_properties_collector_factories =
+//           table_properties_collector_factories_;
+//     }
 
-    OpenAndCompactOptions options;
-    options.canceled = &canceled_;
+//     OpenAndCompactOptions options;
+//     options.canceled = &canceled_;
 
-    Status s =
-        DB::OpenAndCompact(options, db_path_, db_path_ + "/" + scheduled_job_id,
-                           compaction_input, result, options_override);
-    if (is_override_wait_result_) {
-      *result = override_wait_result_;
-    }
-    compaction_num_.fetch_add(1);
-    if (s.ok()) {
-      return CompactionServiceJobStatus::kSuccess;
-    } else {
-      return CompactionServiceJobStatus::kFailure;
-    }
-  }
+//     Status s =
+//         DB::OpenAndCompact(options, db_path_, db_path_ + "/" + scheduled_job_id,
+//                            compaction_input, result, options_override);
+//     if (is_override_wait_result_) {
+//       *result = override_wait_result_;
+//     }
+//     compaction_num_.fetch_add(1);
+//     if (s.ok()) {
+//       return CompactionServiceJobStatus::kSuccess;
+//     } else {
+//       return CompactionServiceJobStatus::kFailure;
+//     }
+//   }
 
-  int GetCompactionNum() { return compaction_num_.load(); }
+//   int GetCompactionNum() { return compaction_num_.load(); }
 
-  CompactionServiceJobInfo GetCompactionInfoForStart() { return start_info_; }
-  CompactionServiceJobInfo GetCompactionInfoForWait() { return wait_info_; }
+//   CompactionServiceJobInfo GetCompactionInfoForStart() { return start_info_; }
+//   CompactionServiceJobInfo GetCompactionInfoForWait() { return wait_info_; }
 
-  void OverrideStartStatus(CompactionServiceJobStatus s) {
-    is_override_start_status_ = true;
-    override_start_status_ = s;
-  }
+//   void OverrideStartStatus(CompactionServiceJobStatus s) {
+//     is_override_start_status_ = true;
+//     override_start_status_ = s;
+//   }
 
-  void OverrideWaitStatus(CompactionServiceJobStatus s) {
-    is_override_wait_status_ = true;
-    override_wait_status_ = s;
-  }
+//   void OverrideWaitStatus(CompactionServiceJobStatus s) {
+//     is_override_wait_status_ = true;
+//     override_wait_status_ = s;
+//   }
 
-  void OverrideWaitResult(std::string str) {
-    is_override_wait_result_ = true;
-    override_wait_result_ = std::move(str);
-  }
+//   void OverrideWaitResult(std::string str) {
+//     is_override_wait_result_ = true;
+//     override_wait_result_ = std::move(str);
+//   }
 
-  void ResetOverride() {
-    is_override_wait_result_ = false;
-    is_override_start_status_ = false;
-    is_override_wait_status_ = false;
-  }
+//   void ResetOverride() {
+//     is_override_wait_result_ = false;
+//     is_override_start_status_ = false;
+//     is_override_wait_status_ = false;
+//   }
 
-  void SetCanceled(bool canceled) { canceled_ = canceled; }
+//   void SetCanceled(bool canceled) { canceled_ = canceled; }
 
- private:
-  InstrumentedMutex mutex_;
-  std::atomic_int compaction_num_{0};
-  std::map<std::string, std::string> jobs_;
-  std::map<std::string, CompactionServiceJobInfo> infos_;
-  const std::string db_path_;
-  Options options_;
-  std::shared_ptr<Statistics> statistics_;
-  CompactionServiceJobInfo start_info_;
-  CompactionServiceJobInfo wait_info_;
-  bool is_override_start_status_ = false;
-  CompactionServiceJobStatus override_start_status_ =
-      CompactionServiceJobStatus::kFailure;
-  bool is_override_wait_status_ = false;
-  CompactionServiceJobStatus override_wait_status_ =
-      CompactionServiceJobStatus::kFailure;
-  bool is_override_wait_result_ = false;
-  std::string override_wait_result_;
-  std::vector<std::shared_ptr<EventListener>> listeners_;
-  std::vector<std::shared_ptr<TablePropertiesCollectorFactory>>
-      table_properties_collector_factories_;
-  std::atomic_bool canceled_{false};
-};
+//  private:
+//   InstrumentedMutex mutex_;
+//   std::atomic_int compaction_num_{0};
+//   std::map<std::string, std::string> jobs_;
+//   std::map<std::string, CompactionServiceJobInfo> infos_;
+//   const std::string db_path_;
+//   Options options_;
+//   std::shared_ptr<Statistics> statistics_;
+//   CompactionServiceJobInfo start_info_;
+//   CompactionServiceJobInfo wait_info_;
+//   bool is_override_start_status_ = false;
+//   CompactionServiceJobStatus override_start_status_ =
+//       CompactionServiceJobStatus::kFailure;
+//   bool is_override_wait_status_ = false;
+//   CompactionServiceJobStatus override_wait_status_ =
+//       CompactionServiceJobStatus::kFailure;
+//   bool is_override_wait_result_ = false;
+//   std::string override_wait_result_;
+//   std::vector<std::shared_ptr<EventListener>> listeners_;
+//   std::vector<std::shared_ptr<TablePropertiesCollectorFactory>>
+//       table_properties_collector_factories_;
+//   std::atomic_bool canceled_{false};
+// };
 
 class CompactionServiceTest : public DBTestBase {
  public:

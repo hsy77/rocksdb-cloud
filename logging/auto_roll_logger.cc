@@ -309,19 +309,19 @@ Status CreateLoggerFromOptions(const std::string& dbname,
     }
   }
   // Currently we only support roll by time-to-roll and log size
-  if (options.log_file_time_to_roll > 0 || options.max_log_file_size > 0) {
-    AutoRollLogger* result = new AutoRollLogger(
-        env->GetFileSystem(), clock, dbname, options.db_log_dir,
-        options.max_log_file_size, options.log_file_time_to_roll,
-        options.keep_log_file_num, options.info_log_level);
-    s = result->GetStatus();
-    if (!s.ok()) {
-      delete result;
-    } else {
-      logger->reset(result);
-    }
-    return s;
-  }
+  // if (options.log_file_time_to_roll > 0 || options.max_log_file_size > 0) {
+  //   AutoRollLogger* result = new AutoRollLogger(
+  //       env->GetFileSystem(), clock, dbname, options.db_log_dir,
+  //       options.max_log_file_size, options.log_file_time_to_roll,
+  //       options.keep_log_file_num, options.info_log_level);
+  //   s = result->GetStatus();
+  //   if (!s.ok()) {
+  //     delete result;
+  //   } else {
+  //     logger->reset(result);
+  //   }
+  //   return s;
+  // }
   // Open a log file in the same directory as the db
   s = env->FileExists(fname);
   if (s.ok()) {

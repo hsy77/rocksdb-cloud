@@ -658,6 +658,10 @@ enum Histograms : uint32_t {
   // Wait time for aborting async read in FilePrefetchBuffer destructor
   ASYNC_PREFETCH_ABORT_MICROS,
 
+  REMOTE_COMPACT_PROCESS,
+  
+  REMOTE_COMPACT_OPEN_DB_DELAY,
+
   // Number of bytes read for RocksDB's prefetching contents (as opposed to file
   // system's prefetch) from the end of SST table during block based table open
   TABLE_OPEN_PREFETCH_TAIL_READ_BYTES,
