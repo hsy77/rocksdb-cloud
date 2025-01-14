@@ -24,13 +24,11 @@ struct CompactionResult {
 // 序列化 Compaction 任务参数为 JSON 字符串
 std::string SerializeCompactionTask(const std::string& db_path, 
                                     const std::string& scheduled_job_id,
-                                    const std::string& compaction_input,
-                                    const std::string& options_override_json) {
+                                    const std::string& compaction_input) {
     json task;
     task["db_path"] = db_path;
     task["scheduled_job_id"] = scheduled_job_id;
     task["compaction_input"] = compaction_input;
-    task["options_override"] = options_override_json;
     return task.dump();
 }
 
@@ -84,7 +82,7 @@ CompactionResult TriggerCompactionLambda(const std::string& function_name, const
 namespace ROCKSDB_NAMESPACE {
 
 // 启动压缩任务
-CompactionServiceScheduleResponse MyTestCompactionService::StartV2(
+CompactionServiceJobStatus MyTestCompactionService::StartV2(
     const CompactionServiceJobInfo& info,
     const std::string& compaction_service_input) {
 
@@ -129,42 +127,18 @@ CompactionServiceJobStatus MyTestCompactionService::WaitForCompleteV2(
     return override_wait_status_;
   }
 
-  // 设置压缩选项
-  CompactionServiceOptionsOverride options_override;
-  options_override.env = options_.env;
-  options_override.file_checksum_gen_factory =
-      options_.file_checksum_gen_factory;
-  options_override.comparator = options_.comparator;
-  options_override.merge_operator = options_.merge_operator;
-  options_override.compaction_filter = options_.compaction_filter;
-  options_override.compaction_filter_factory =
-      options_.compaction_filter_factory;
-  options_override.prefix_extractor = options_.prefix_extractor;
-  options_override.table_factory = options_.table_factory;
-  options_override.sst_partitioner_factory = options_.sst_partitioner_factory;
-  options_override.statistics = statistics_;
-  if (!listeners_.empty()) {
-    options_override.listeners = listeners_;
-  }
-
-  if (!table_properties_collector_factories_.empty()) {
-    options_override.table_properties_collector_factories =
-        table_properties_collector_factories_;
-  }
-
   OpenAndCompactOptions options;
   options.canceled = &canceled_;
 
   // 获取 trigger_ms
-  uint64_t trigger_ms = compaction_addition_info->trigger_ms();
+  uint64_t trigger_ms = compaction_addition_info->trigger_ms;
 
   // 定义 Lambda 任务参数
   std::string scheduled_job_id = std::to_string(info.job_id);
   std::string payload = SerializeCompactionTask(
       db_path_,
       scheduled_job_id,
-      compaction_input,
-      options_override.dump()
+      compaction_input
   );
 
   // 初始化 AWS SDK
@@ -182,14 +156,9 @@ CompactionServiceJobStatus MyTestCompactionService::WaitForCompleteV2(
       try {
           json response = json::parse(lambda_result.message);
           *compaction_service_result = response["message"].get<std::string>();
-          compaction_addition_info->process_latency = lambda_result.process_latency;
-          compaction_addition_info->open_db_latency = lambda_result.open_db_latency;
 
           // 更新 compaction_addition_info
           compaction_addition_info->trigger_ms = lambda_result.process_latency;
-          // 注意：根据原代码逻辑，这里可能需要调整字段赋值
-          // 例如：
-          // compaction_addition_info->num_entries = lambda_result.open_db_latency;
 
           compaction_num_.fetch_add(1);
           return CompactionServiceJobStatus::kSuccess;
