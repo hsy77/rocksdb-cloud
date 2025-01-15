@@ -93,7 +93,7 @@ option(WITH_SNAPPY "build with SNAPPY" OFF)
 option(WITH_LZ4 "build with lz4" OFF)
 option(WITH_ZLIB "build with zlib" OFF)
 option(WITH_ZSTD "build with zstd" OFF)
-option(WITH_AWS "build with AWS" ON)
+option(WITH_AWS "build with AWS" OFF)
 option(WITH_WINDOWS_UTF8_FILENAMES "use UTF8 as characterset for opening files, regardles of the system code page" OFF)
 if (WITH_WINDOWS_UTF8_FILENAMES)
   add_definitions(-DROCKSDB_WINDOWS_UTF8_FILENAMES)
@@ -198,11 +198,16 @@ else()
 endif()
 
 if(WITH_AWS)
-  find_package(AWSSDK REQUIRED COMPONENTS s3 lambda core transfer kinesis)
+  find_package(AWSSDK REQUIRED COMPONENTS s3 transfer kinesis)
   add_definitions(-DUSE_AWS)
   include_directories(${AWS_INCLUDE_DIR})
   list(APPEND THIRDPARTY_LIBS ${AWSSDK_LINK_LIBRARIES})
 endif()
+
+find_package(AWSSDK REQUIRED COMPONENTS s3 lambda core)
+add_definitions(-DUSE_AWS)
+include_directories(${AWS_INCLUDE_DIR})
+list(APPEND THIRDPARTY_LIBS ${AWSSDK_LINK_LIBRARIES})
 
 option(WITH_MD_LIBRARY "build with MD" ON)
 if(WIN32 AND MSVC)
@@ -1539,6 +1544,7 @@ if(WITH_TESTS)
   # Find AWS Lambda Runtime
   # Assuming you have the AWS Lambda Runtime as a submodule or installed in a known path
   # You might need to adjust the path accordingly
+
   find_path(AWS_LAMBDA_RUNTIME_INCLUDE_DIR aws/lambda-runtime/runtime.h)
   find_library(AWS_LAMBDA_RUNTIME_LIB aws-lambda-runtime)
 
