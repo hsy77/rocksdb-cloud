@@ -348,22 +348,38 @@ endif()
 if (WITH_LIBURING)
   find_package(uring)
   if (uring_FOUND)
-    message(STATUS "Found liburing ${uring_VERSION}")
+    message(STATUS "uring found!")
     add_definitions(-DROCKSDB_IOURING_PRESENT)
     list(APPEND THIRDPARTY_LIBS uring::uring)
 
-    # 如果 uring 定义了包含目录和库变量，可以这样显示
+    # 检查 include 目录
     if (uring_INCLUDE_DIRS)
       message(STATUS "uring include dir: ${uring_INCLUDE_DIRS}")
     else()
       message(WARNING "uring include dir is not specified!")
     endif()
-    
+
+    # 检查库路径是否是 .so 文件
     if (uring_LIBRARIES)
-      message(STATUS "uring libraries: ${uring_LIBRARIES}")
+      string(FIND "${uring_LIBRARIES}" ".so" LIB_IS_SO)
+      if (LIB_IS_SO GREATER -1)
+        message(STATUS "uring libraries (shared): ${uring_LIBRARIES}")
+      else()
+        message(WARNING "uring libraries is a static file (.a): ${uring_LIBRARIES}")
+        # 尝试自动切换到 .so 文件
+        get_filename_component(LIB_DIR "${uring_LIBRARIES}" DIRECTORY)
+        find_library(uring_SO_FILE NAMES uring PATHS "${LIB_DIR}" NO_DEFAULT_PATH)
+        if (uring_SO_FILE)
+          message(STATUS "Switching to uring shared library: ${uring_SO_FILE}")
+          set(uring_LIBRARIES "${uring_SO_FILE}")
+        else()
+          message(FATAL_ERROR "Shared library (.so) for uring not found in ${LIB_DIR}!")
+        endif()
+      endif()
     else()
       message(WARNING "uring libraries are not specified!")
     endif()
+
   else()
     message(WARNING "uring not found!")
   endif()
