@@ -165,6 +165,8 @@ else()
 
   if(WITH_ZLIB)
     find_package(ZLIB REQUIRED)
+    message(STATUS "ZLIB include dir: ${ZLIB_INCLUDE_DIRS}")
+    message(STATUS "ZLIB libraries: ${ZLIB_LIBRARIES}")
     add_definitions(-DZLIB)
     list(APPEND THIRDPARTY_LIBS ZLIB::ZLIB)
   endif()
