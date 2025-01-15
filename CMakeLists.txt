@@ -351,6 +351,21 @@ if (WITH_LIBURING)
     message(STATUS "Found liburing ${uring_VERSION}")
     add_definitions(-DROCKSDB_IOURING_PRESENT)
     list(APPEND THIRDPARTY_LIBS uring::uring)
+
+    # 如果 uring 定义了包含目录和库变量，可以这样显示
+    if (uring_INCLUDE_DIRS)
+      message(STATUS "uring include dir: ${uring_INCLUDE_DIRS}")
+    else()
+      message(WARNING "uring include dir is not specified!")
+    endif()
+    
+    if (uring_LIBRARIES)
+      message(STATUS "uring libraries: ${uring_LIBRARIES}")
+    else()
+      message(WARNING "uring libraries are not specified!")
+    endif()
+  else()
+    message(WARNING "uring not found!")
   endif()
 endif()
 
