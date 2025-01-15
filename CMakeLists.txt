@@ -1010,21 +1010,21 @@ set(SOURCES
         utilities/wal_filter.cc
         utilities/write_batch_with_index/write_batch_with_index.cc
         utilities/write_batch_with_index/write_batch_with_index_internal.cc
-        # cloud/aws/aws_file_system.cc
-        # cloud/aws/aws_kafka.cc
-        # cloud/aws/aws_kinesis.cc
-        # cloud/aws/aws_retry.cc
-        # cloud/aws/aws_s3.cc
-        # cloud/db_cloud_impl.cc
-        # cloud/cloud_file_system.cc
-        # cloud/cloud_file_system_impl.cc
-        # cloud/cloud_log_controller.cc
-        # cloud/manifest_reader.cc
-        # cloud/purge.cc
-        # cloud/cloud_manifest.cc
-        # cloud/cloud_scheduler.cc
-        # cloud/cloud_storage_provider.cc
-        # cloud/cloud_file_deletion_scheduler.cc
+        cloud/aws/aws_file_system.cc
+        cloud/aws/aws_kafka.cc
+        cloud/aws/aws_kinesis.cc
+        cloud/aws/aws_retry.cc
+        cloud/aws/aws_s3.cc
+        cloud/db_cloud_impl.cc
+        cloud/cloud_file_system.cc
+        cloud/cloud_file_system_impl.cc
+        cloud/cloud_log_controller.cc
+        cloud/manifest_reader.cc
+        cloud/purge.cc
+        cloud/cloud_manifest.cc
+        cloud/cloud_scheduler.cc
+        cloud/cloud_storage_provider.cc
+        cloud/cloud_file_deletion_scheduler.cc
         db/db_impl/replication_codec.cc
         db/compaction/compaction_service.cc)
 
@@ -1358,11 +1358,11 @@ if(WITH_TESTS)
         cache/cache_test.cc
         cache/compressed_secondary_cache_test.cc
         cache/lru_cache_test.cc
-        # cloud/cloud_file_system_test.cc
-        # cloud/db_cloud_test.cc
-        # cloud/cloud_manifest_test.cc
-        # cloud/cloud_scheduler_test.cc
-        # cloud/replication_test.cc
+        cloud/cloud_file_system_test.cc
+        cloud/db_cloud_test.cc
+        cloud/cloud_manifest_test.cc
+        cloud/cloud_scheduler_test.cc
+        cloud/replication_test.cc
         cache/tiered_secondary_cache_test.cc
         db/blob/blob_counting_iterator_test.cc
         db/blob/blob_file_addition_test.cc
