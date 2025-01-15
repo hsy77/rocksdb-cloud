@@ -370,6 +370,10 @@ if (WITH_LIBURING)
         if (uring_SO_FILE)
           message(STATUS "Switching to uring shared library: ${uring_SO_FILE}")
           set(uring_LIBRARIES "${uring_SO_FILE}")
+          # 将 updated uring_LIBRARIES 设置为全局
+          set(THIRDPARTY_LIBS ${THIRDPARTY_LIBS} ${uring_LIBRARIES})
+          message(STATUS "uring_LIBRARIES: ${uring_LIBRARIES}")
+          message(STATUS "uring_INCLUDE_DIRS: ${uring_INCLUDE_DIRS}")
         else()
           message(FATAL_ERROR "Shared library (.so) for uring not found in ${LIB_DIR}!")
         endif()
@@ -380,7 +384,7 @@ if (WITH_LIBURING)
     
     add_definitions(-DROCKSDB_IOURING_PRESENT)
     list(APPEND THIRDPARTY_LIBS uring::uring)
-    
+
   else()
     message(WARNING "uring not found!")
   endif()
