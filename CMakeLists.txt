@@ -349,8 +349,6 @@ if (WITH_LIBURING)
   find_package(uring)
   if (uring_FOUND)
     message(STATUS "uring found!")
-    add_definitions(-DROCKSDB_IOURING_PRESENT)
-    list(APPEND THIRDPARTY_LIBS uring::uring)
 
     # 检查 include 目录
     if (uring_INCLUDE_DIRS)
@@ -379,7 +377,10 @@ if (WITH_LIBURING)
     else()
       message(WARNING "uring libraries are not specified!")
     endif()
-
+    
+    add_definitions(-DROCKSDB_IOURING_PRESENT)
+    list(APPEND THIRDPARTY_LIBS uring::uring)
+    
   else()
     message(WARNING "uring not found!")
   endif()
