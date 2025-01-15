@@ -198,7 +198,7 @@ else()
 endif()
 
 if(WITH_AWS)
-  find_package(AWSSDK REQUIRED COMPONENTS s3 lambda core)
+  find_package(AWSSDK REQUIRED COMPONENTS s3 lambda core transfer kinesis)
   add_definitions(-DUSE_AWS)
   include_directories(${AWS_INCLUDE_DIR})
   list(APPEND THIRDPARTY_LIBS ${AWSSDK_LINK_LIBRARIES})
