@@ -204,11 +204,6 @@ if(WITH_AWS)
   list(APPEND THIRDPARTY_LIBS ${AWSSDK_LINK_LIBRARIES})
 endif()
 
-find_package(AWSSDK REQUIRED COMPONENTS s3 lambda core)
-add_definitions(-DUSE_AWS)
-include_directories(${AWS_INCLUDE_DIR})
-list(APPEND THIRDPARTY_LIBS ${AWSSDK_LINK_LIBRARIES})
-
 option(WITH_MD_LIBRARY "build with MD" ON)
 if(WIN32 AND MSVC)
   if(WITH_MD_LIBRARY)
