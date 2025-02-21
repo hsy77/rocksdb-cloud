@@ -5902,7 +5902,7 @@ Status VersionSet::ProcessManifestWrites(
         auto epoch = db_options_->replication_epoch_extractor
                          ->EpochOfReplicationSequence(
                              *pending_persist_replication_sequence);
-        // bool replication_epoch_set_empty = replication_epochs_.empty();
+        bool replication_epoch_set_empty = replication_epochs_.empty();
         replication_epochs_.DeleteEpochsBefore(epoch);
         // If replication epoch set is not empty before pruning, then it won't
         // be empty after pruning
